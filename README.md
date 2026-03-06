@@ -7,8 +7,8 @@ An [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) server that 
 Instead of manually writing PHP scripts and running them over SSH, you get **25 tools** that Claude (or any MCP client) can call directly:
 
 ```
-You:    "What's the stock level for BPC-157?"
-Claude: *calls get_products(search="BPC-157")* → returns product data instantly
+You:    "What's the stock level for xyz?"
+Claude: *calls get_products(search="xyz")* → returns product data instantly
 ```
 
 **Before MCP:** Write PHP script → upload via SSH → run → parse output (5+ steps, 2-3 minutes)
