@@ -4,7 +4,7 @@ An [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) server that 
 
 ## What It Does
 
-Instead of manually writing PHP scripts and running them over SSH, you get **25 tools** that Claude (or any MCP client) can call directly:
+Instead of manually writing PHP scripts and running them over SSH, you get **33 tools** that Claude (or any MCP client) can call directly:
 
 ```
 You:    "What's the stock level for xyz?"
@@ -30,7 +30,11 @@ Claude: *calls get_products(search="xyz")* → returns product data instantly
 | `get_settings` | OpenCart core settings |
 | `get_j3_settings` | Journal3 theme settings |
 | `get_j3_skin_settings` | Journal3 skin/layout settings |
-| `get_modules` | Journal3 modules by type |
+| `get_modules` | Journal3 modules by type, search content |
+| `get_j3_module` | Full module data for a single J3 module |
+| `get_order_statuses` | List all order statuses with IDs |
+| `get_product_attributes` | Product attributes (CAS, weight, storage, etc.) |
+| `sales_summary` | Revenue, top sellers, daily stats for any period |
 | `get_modifications` | OCMOD modifications with status |
 | `get_extensions` | Installed extensions list |
 | `get_seo_urls` | SEO URL mappings |
@@ -46,6 +50,10 @@ Claude: *calls get_products(search="xyz")* → returns product data instantly
 | `update_setting` | Change OpenCart settings |
 | `update_j3_setting` | Change Journal3 settings |
 | `update_j3_skin_setting` | Change Journal3 skin settings |
+| `update_j3_module` | Find/replace text within J3 module JSON (banners, sliders) |
+| `update_seo_url` | Create or update SEO URL mappings |
+| `update_category` | Update category name, meta, status |
+| `write_file` | Write files to VPS via SFTP |
 | `run_sql` | Execute INSERT/UPDATE/DELETE statements |
 | `clear_cache` | Flush OpenCart + Journal3 caches |
 | `refresh_modifications` | Clear OCMOD modification cache |

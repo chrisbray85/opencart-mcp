@@ -219,12 +219,12 @@ def get_settings(group: str = "", key: str = "") -> str:
     where = "WHERE store_id = 0"
     if group:
         safe = group.replace("'", "\\'")
-        where += f" AND `group` = '{safe}'"
+        where += f" AND code = '{safe}'"
     if key:
         safe = key.replace("'", "\\'")
         where += f" AND `key` LIKE '{safe}'"
 
-    sql = f"SELECT setting_id, `group`, `key`, value, serialized FROM oc_setting {where} ORDER BY `group`, `key`"
+    sql = f"SELECT setting_id, code, `key`, value, serialized FROM oc_setting {where} ORDER BY code, `key`"
     rows = db.run_query(sql)
     return json.dumps(rows, indent=2)
 
@@ -270,13 +270,19 @@ def get_j3_skin_settings(pattern: str = "", skin_id: int = 1) -> str:
 
 
 @mcp.tool()
-def get_modules(module_type: str = "") -> str:
-    """List Journal3 modules. Filter by type (e.g. 'products', 'slider', 'product_tabs')."""
+def get_modules(module_type: str = "", search: str = "") -> str:
+    """List Journal3 modules. Filter by type (e.g. 'products', 'slider', 'product_tabs').
+    Search module_data content with search parameter."""
 
-    where = ""
+    where_parts = []
     if module_type:
         safe = module_type.replace("'", "\\'")
-        where = f"WHERE module_type = '{safe}'"
+        where_parts.append(f"module_type = '{safe}'")
+    if search:
+        safe = search.replace("'", "\\'")
+        where_parts.append(f"module_data LIKE '%{safe}%'")
+
+    where = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
 
     sql = f"""
         SELECT module_id, module_type,
@@ -287,6 +293,107 @@ def get_modules(module_type: str = "") -> str:
     """
     rows = db.run_query(sql)
     return json.dumps(rows, indent=2)
+
+
+@mcp.tool()
+def get_j3_module(module_id: int) -> str:
+    """Get full Journal3 module data for a single module by ID.
+    Returns full JSON config — can be large for complex modules."""
+
+    sql = f"""
+        SELECT module_id, module_type, module_data
+        FROM oc_journal3_module
+        WHERE module_id = {int(module_id)}
+    """
+    rows = db.run_query(sql)
+    if not rows:
+        return json.dumps({"error": f"Module {module_id} not found"})
+    return json.dumps(rows[0], indent=2)
+
+
+@mcp.tool()
+def get_order_statuses() -> str:
+    """List all order statuses with their IDs."""
+
+    sql = """
+        SELECT order_status_id, name
+        FROM oc_order_status
+        WHERE language_id = 1
+        ORDER BY order_status_id
+    """
+    rows = db.run_query(sql)
+    return json.dumps(rows, indent=2)
+
+
+@mcp.tool()
+def get_product_attributes(product_id: int) -> str:
+    """Get all attributes for a product (e.g. CAS number, molecular weight, storage)."""
+
+    sql = f"""
+        SELECT pa.attribute_id, ad.name AS attribute_name,
+               agd.name AS attribute_group, pa.text AS value
+        FROM oc_product_attribute pa
+        JOIN oc_attribute a ON pa.attribute_id = a.attribute_id
+        JOIN oc_attribute_description ad ON a.attribute_id = ad.attribute_id AND ad.language_id = 1
+        JOIN oc_attribute_group_description agd ON a.attribute_group_id = agd.attribute_group_id AND agd.language_id = 1
+        WHERE pa.product_id = {int(product_id)} AND pa.language_id = 1
+        ORDER BY agd.name, ad.name
+    """
+    rows = db.run_query(sql)
+    return json.dumps(rows, indent=2)
+
+
+@mcp.tool()
+def sales_summary(days: int = 30, top_n: int = 20) -> str:
+    """Get sales summary: total revenue, order count, top selling products.
+    Covers the last N days. Excludes cancelled/failed/refunded orders."""
+
+    # Overall stats
+    stats = db.run_query(f"""
+        SELECT COUNT(*) AS total_orders,
+               ROUND(SUM(total), 2) AS total_revenue,
+               ROUND(AVG(total), 2) AS avg_order_value,
+               COUNT(DISTINCT email) AS unique_customers
+        FROM oc_order
+        WHERE date_added >= DATE_SUB(NOW(), INTERVAL {int(days)} DAY)
+          AND order_status_id NOT IN (0, 7, 8, 10, 14, 11, 12)
+    """)
+
+    # Top products by units sold
+    top_products = db.run_query(f"""
+        SELECT op.product_id, pd.name,
+               SUM(op.quantity) AS units_sold,
+               ROUND(SUM(op.total), 2) AS revenue,
+               COUNT(DISTINCT op.order_id) AS order_count
+        FROM oc_order_product op
+        JOIN oc_order o ON op.order_id = o.order_id
+        JOIN oc_product_description pd ON op.product_id = pd.product_id AND pd.language_id = 1
+        WHERE o.date_added >= DATE_SUB(NOW(), INTERVAL {int(days)} DAY)
+          AND o.order_status_id NOT IN (0, 7, 8, 10, 14, 11, 12)
+        GROUP BY op.product_id, pd.name
+        ORDER BY units_sold DESC
+        LIMIT {int(top_n)}
+    """)
+
+    # Daily revenue for the period
+    daily = db.run_query(f"""
+        SELECT DATE(date_added) AS date,
+               COUNT(*) AS orders,
+               ROUND(SUM(total), 2) AS revenue
+        FROM oc_order
+        WHERE date_added >= DATE_SUB(NOW(), INTERVAL {int(days)} DAY)
+          AND order_status_id NOT IN (0, 7, 8, 10, 14, 11, 12)
+        GROUP BY DATE(date_added)
+        ORDER BY date DESC
+    """)
+
+    result = {
+        "period_days": days,
+        "summary": stats[0] if stats else {},
+        "top_products": top_products,
+        "daily_revenue": daily,
+    }
+    return json.dumps(result, indent=2)
 
 
 @mcp.tool()
@@ -442,9 +549,9 @@ def update_setting(group: str, key: str, value: str) -> str:
     safe_value = value.replace("'", "\\'")
 
     result = db.run_query(
-        f"UPDATE oc_setting SET value = '{safe_value}' WHERE `group` = '{safe_group}' AND `key` = '{safe_key}' AND store_id = 0"
+        f"UPDATE oc_setting SET value = '{safe_value}' WHERE code = '{safe_group}' AND `key` = '{safe_key}' AND store_id = 0"
     )
-    return json.dumps({"updated": True, "group": group, "key": key, "result": result}, indent=2)
+    return json.dumps({"updated": True, "code": group, "key": key, "result": result}, indent=2)
 
 
 @mcp.tool()
@@ -471,6 +578,125 @@ def update_j3_skin_setting(setting_name: str, setting_value: str, skin_id: int =
         f"UPDATE oc_journal3_skin_setting SET setting_value = '{safe_value}' WHERE setting_name = '{safe_name}' AND skin_id = {int(skin_id)}"
     )
     return json.dumps({"updated": True, "setting_name": setting_name, "result": result}, indent=2)
+
+
+@mcp.tool()
+def update_j3_module(module_id: int, find: str, replace: str) -> str:
+    """Update text within a Journal3 module's JSON data using find/replace.
+    Safer than rewriting the entire module — only changes the matched text.
+    Use get_j3_module first to see the current content."""
+
+    # Fetch current module data
+    rows = db.run_query(f"SELECT module_data FROM oc_journal3_module WHERE module_id = {int(module_id)}")
+    if not rows:
+        return json.dumps({"error": f"Module {module_id} not found"})
+
+    current = rows[0]["module_data"]
+
+    if find not in current:
+        return json.dumps({"error": f"Text '{find}' not found in module {module_id}"})
+
+    count = current.count(find)
+    updated = current.replace(find, replace)
+
+    safe_updated = updated.replace("\\", "\\\\").replace("'", "\\'")
+    result = db.run_query(
+        f"UPDATE oc_journal3_module SET module_data = '{safe_updated}' WHERE module_id = {int(module_id)}"
+    )
+    return json.dumps({
+        "updated": True, "module_id": module_id,
+        "replacements": count, "find": find, "replace": replace,
+        "result": result,
+    }, indent=2)
+
+
+@mcp.tool()
+def update_seo_url(query: str, keyword: str) -> str:
+    """Update or create an SEO URL mapping. Query is e.g. 'product_id=123' or 'category_id=45'.
+    Keyword is the URL slug (e.g. 'bpc-157-5mg')."""
+
+    safe_query = query.replace("'", "\\'")
+    safe_keyword = keyword.replace("'", "\\'")
+
+    # Check if mapping exists
+    existing = db.run_query(
+        f"SELECT seo_url_id FROM oc_seo_url WHERE query = '{safe_query}' AND store_id = 0 AND language_id = 1"
+    )
+
+    if existing:
+        result = db.run_query(
+            f"UPDATE oc_seo_url SET keyword = '{safe_keyword}' WHERE query = '{safe_query}' AND store_id = 0 AND language_id = 1"
+        )
+        return json.dumps({"updated": True, "query": query, "keyword": keyword, "result": result}, indent=2)
+    else:
+        result = db.run_query(
+            f"INSERT INTO oc_seo_url (store_id, language_id, query, keyword) VALUES (0, 1, '{safe_query}', '{safe_keyword}')"
+        )
+        return json.dumps({"created": True, "query": query, "keyword": keyword, "result": result}, indent=2)
+
+
+@mcp.tool()
+def update_category(
+    category_id: int,
+    name: str | None = None,
+    meta_title: str | None = None,
+    meta_description: str | None = None,
+    status: int | None = None,
+) -> str:
+    """Update category fields. Only specified fields are changed."""
+
+    updates_cat = []
+    updates_desc = []
+
+    if status is not None:
+        updates_cat.append(f"status = {int(status)}")
+
+    if name is not None:
+        safe = name.replace("'", "\\'")
+        updates_desc.append(f"name = '{safe}'")
+    if meta_title is not None:
+        safe = meta_title.replace("'", "\\'")
+        updates_desc.append(f"meta_title = '{safe}'")
+    if meta_description is not None:
+        safe = meta_description.replace("'", "\\'")
+        updates_desc.append(f"meta_description = '{safe}'")
+
+    if not updates_cat and not updates_desc:
+        return json.dumps({"error": "No fields to update"})
+
+    results = []
+    if updates_cat:
+        sql = f"UPDATE oc_category SET {', '.join(updates_cat)} WHERE category_id = {int(category_id)}"
+        r = db.run_query(sql)
+        results.append({"table": "oc_category", "result": r})
+
+    if updates_desc:
+        sql = f"UPDATE oc_category_description SET {', '.join(updates_desc)} WHERE category_id = {int(category_id)} AND language_id = 1"
+        r = db.run_query(sql)
+        results.append({"table": "oc_category_description", "result": r})
+
+    return json.dumps({"updated": True, "category_id": category_id, "results": results}, indent=2)
+
+
+@mcp.tool()
+def write_file(path: str, content: str) -> str:
+    """Write content to a file on the VPS via SFTP. Path is relative to OpenCart root unless absolute.
+    Creates parent directories if needed. Use with caution."""
+
+    if not path.startswith("/"):
+        full_path = f"{config.oc_root}/{path}"
+    else:
+        full_path = path
+
+    if ".." in path:
+        return json.dumps({"error": "Path traversal not allowed"})
+
+    # Ensure parent directory exists
+    parent = "/".join(full_path.split("/")[:-1])
+    db.run_command(f"mkdir -p '{parent}'")
+
+    db.write_file(full_path, content)
+    return json.dumps({"written": True, "path": full_path, "bytes": len(content)}, indent=2)
 
 
 @mcp.tool()
