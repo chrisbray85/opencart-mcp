@@ -13,6 +13,8 @@ Built for store owners and developers who are tired of SSH + phpMyAdmin + admin 
 
 It just works. You ask, Claude calls the right tool, you get the answer.
 
+> 💻 **Prefer the terminal?** Check out [**opencart-cli**](https://github.com/chrisbray85/opencart-cli) — same OpenCart understanding, pretty tables, sparklines, AI in the shell (`opencart ask "..."`), interactive REPL, live order watching. `pip install opencart-cli`.
+
 ---
 
 ## Safe by default
