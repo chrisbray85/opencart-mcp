@@ -1,6 +1,8 @@
-"""SSH + PHP query executor for OpenCart MySQL."""
+"""SSH + PHP query executor for OpenCart MySQL, with DDEV support."""
 
 import json
+import subprocess
+
 import paramiko
 
 from .config import Config
@@ -10,11 +12,34 @@ _NOISE = ("tput:", "WARNING:", "post-quantum", "upgraded", "Unsuccessful stat")
 
 
 class OpenCartDB:
-    """Executes MySQL queries on VPS via SSH + PHP scripts."""
+    """Executes MySQL queries on VPS via SSH + PHP scripts, or via DDEV."""
 
     def __init__(self, config: Config):
         self.config = config
         self._client: paramiko.SSHClient | None = None
+        self._use_ddev = config.is_ddev
+
+    # ── DDEV backend ──────────────────────────────────────────────
+
+    def _ddev_exec(self, command: str, timeout: int = 30) -> tuple[str, str]:
+        """Execute command inside DDEV web container."""
+        result = subprocess.run(
+            ["ddev", "exec", "bash", "-c", command],
+            capture_output=True, text=True, timeout=timeout,
+            cwd=self.config.local_root or None,
+        )
+        return result.stdout, result.stderr
+
+    def _ddev_exec_php_stdin(self, php_code: str, timeout: int = 30) -> str:
+        """Execute PHP code by piping to php inside DDEV."""
+        result = subprocess.run(
+            ["ddev", "exec", "php"],
+            input=php_code, capture_output=True, text=True, timeout=timeout,
+            cwd=self.config.local_root or None,
+        )
+        return result.stdout
+
+    # ── SSH backend ───────────────────────────────────────────────
 
     def _get_client(self) -> paramiko.SSHClient:
         """Get or create SSH connection."""
@@ -22,7 +47,6 @@ class OpenCartDB:
             transport = self._client.get_transport()
             if transport is not None and transport.is_active():
                 return self._client
-            # Connection dead, reconnect
             self._client = None
 
         client = paramiko.SSHClient()
@@ -36,7 +60,7 @@ class OpenCartDB:
         self._client = client
         return client
 
-    def _exec(self, command: str, timeout: int = 30) -> tuple[str, str]:
+    def _ssh_exec(self, command: str, timeout: int = 30) -> tuple[str, str]:
         """Execute command via SSH, return (stdout, stderr)."""
         client = self._get_client()
         _, stdout, stderr = client.exec_command(command, timeout=timeout)
@@ -44,7 +68,7 @@ class OpenCartDB:
         err = stderr.read().decode("utf-8", errors="replace")
         return out, err
 
-    def _exec_php_stdin(self, php_code: str, timeout: int = 30) -> str:
+    def _ssh_exec_php_stdin(self, php_code: str, timeout: int = 30) -> str:
         """Execute PHP code by piping to php via stdin. Returns raw stdout."""
         client = self._get_client()
         stdin, stdout, stderr = client.exec_command("php", timeout=timeout)
@@ -53,13 +77,27 @@ class OpenCartDB:
         out = stdout.read().decode("utf-8", errors="replace")
         return out
 
+    # ── Dispatch ──────────────────────────────────────────────────
+
+    def _exec(self, command: str, timeout: int = 30) -> tuple[str, str]:
+        if self._use_ddev:
+            return self._ddev_exec(command, timeout)
+        return self._ssh_exec(command, timeout)
+
+    def _exec_php_stdin(self, php_code: str, timeout: int = 30) -> str:
+        if self._use_ddev:
+            return self._ddev_exec_php_stdin(php_code, timeout)
+        return self._ssh_exec_php_stdin(php_code, timeout)
+
+    # ── Public API ────────────────────────────────────────────────
+
     def run_query(self, sql: str) -> list[dict] | dict:
         """Execute SQL query and return results as list of dicts."""
         escaped_sql = sql.replace("\\", "\\\\").replace("'", "\\'")
 
         php = f"""<?php
 error_reporting(0);
-$db = new mysqli('localhost', '{self.config.db_user}', '{self.config.db_pass}', '{self.config.db_name}');
+$db = new mysqli('{"db" if self.config.is_ddev else "localhost"}', '{self.config.db_user}', '{self.config.db_pass}', '{self.config.db_name}');
 if ($db->connect_error) {{
     echo json_encode(["error" => "DB connect failed: " . $db->connect_error]);
     exit;
@@ -101,7 +139,7 @@ $db->close();
         return self._exec_php_stdin(php_code)
 
     def run_command(self, command: str, timeout: int = 30) -> str:
-        """Execute shell command on VPS, return output."""
+        """Execute shell command, return output."""
         out, err = self._exec(command, timeout=timeout)
         if err.strip():
             err_lines = [
@@ -113,12 +151,18 @@ $db->close();
         return out
 
     def write_file(self, remote_path: str, content: str):
-        """Write content to a file on VPS via SFTP."""
-        client = self._get_client()
-        sftp = client.open_sftp()
-        with sftp.file(remote_path, "w") as f:
-            f.write(content)
-        sftp.close()
+        """Write content to a file on VPS via SFTP, or via ddev exec."""
+        if self._use_ddev:
+            import base64
+            b64 = base64.b64encode(content.encode()).decode()
+            php = f"""<?php file_put_contents('{remote_path}', base64_decode('{b64}')); echo 'ok';"""
+            self._exec_php_stdin(php)
+        else:
+            client = self._get_client()
+            sftp = client.open_sftp()
+            with sftp.file(remote_path, "w") as f:
+                f.write(content)
+            sftp.close()
 
     def close(self):
         """Close SSH connection."""
