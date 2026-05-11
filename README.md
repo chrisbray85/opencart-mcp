@@ -105,6 +105,20 @@ OPENCART_STORAGE=/path/to/storage
 > - `OPENCART_ROOT` — the directory containing `index.php`, `admin/`, `catalog/`, `system/`
 > - `OPENCART_STORAGE` — check your `config.php` for the `DIR_STORAGE` value (often outside the web root on OpenCart 3.0.3.3+)
 
+#### Using DDEV for local development?
+
+Set `OPENCART_SSH_HOST=ddev` and point `OPENCART_ROOT` at the local project directory — commands will run via `ddev exec` inside your container instead of SSH:
+
+```env
+OPENCART_SSH_HOST=ddev
+OPENCART_DB_USER=db
+OPENCART_DB_PASS=db
+OPENCART_DB_NAME=db
+OPENCART_ROOT=/Users/you/Sites/your-opencart-project
+```
+
+Container paths (`/var/www/html` etc.) are auto-resolved — you only need the local project path. (DDEV support contributed by [@IceDBorn](https://github.com/IceDBorn) — thanks!)
+
 ### 3. Test the connection
 
 ```bash
