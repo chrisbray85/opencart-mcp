@@ -420,20 +420,7 @@ Got a feature request? [Open an issue](https://github.com/chrisbray85/opencart-m
 
 ## Changelog
 
-### v0.3.0 (current)
-- 3 new tools: `get_information_pages`, `get_information_page`, `update_information` for managing CMS pages
-- 36 tools total (24 read + 12 write)
-
-### v0.2.0
-- VS Code / CLI / JetBrains setup instructions
-- Multi-store configuration docs
-- Compatibility table
-
-### v0.1.0
-- Initial release — 33 tools covering products, orders, customers, categories, settings, J3 modules
-- SSH + PHP architecture
-- Journal3 support with graceful fallback
-- Security: read-only default, DDL blocked, path traversal protection
+See [releases](https://github.com/chrisbray85/opencart-mcp/releases) for full history.
 
 ---
 

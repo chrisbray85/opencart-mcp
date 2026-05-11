@@ -1,6 +1,30 @@
+# Secrets — never publish
 .env
+.env.*
+!.env.example
+
+# Python
 .venv/
+venv/
 __pycache__/
 *.pyc
+*.pyo
 dist/
+build/
 *.egg-info/
+
+# IDE / editor noise
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS noise
+.DS_Store
+Thumbs.db
+
+# Personal AI / agent state (never publish)
+.claude/
+.cursor/
+.aider*
+CLAUDE.md
