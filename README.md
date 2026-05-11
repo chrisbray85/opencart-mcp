@@ -68,7 +68,7 @@ You can point this at a production store and not worry about it doing something 
 | Read a J3 module | JSON blob in the database | Copy-paste from phpMyAdmin | "Show me module 505" |
 | Edit FAQ text | Find module, decode JSON, edit, re-encode | Pain | "Replace X with Y in module 505" |
 | Sales report | Reports page, manually filter | Write aggregation queries | "Sales summary for the last 7 days" |
-| Check SEO URLs | Admin > Marketing > SEO URL, paginate | SELECT from oc_seo_url | "Show SEO URLs containing 'peptide'" |
+| Check SEO URLs | Admin > Marketing > SEO URL, paginate | SELECT from oc_seo_url | "Show SEO URLs containing 'headphones'" |
 | Manage CMS pages | Admin > Catalog > Information | Direct DB access | "Show me the About Us page" |
 
 ---
@@ -223,7 +223,7 @@ These all work out of the box. Just type them into Claude Code.
 ```
 "Show me all products with less than 5 in stock"
 "Get full details for product 123 including options and images"
-"Search for products with 'collagen' in the name"
+"Search for products with 'wireless' in the name"
 "Update the price of product 47 to 34.99"
 ```
 
@@ -237,8 +237,8 @@ These all work out of the box. Just type them into Claude Code.
 
 **SEO & content**
 ```
-"List all SEO URLs containing 'research'"
-"Update the SEO URL for product 23 to 'bpc-157-5mg'"
+"List all SEO URLs containing 'sale'"
+"Update the SEO URL for product 23 to 'wireless-mouse-pro'"
 "Show me the FAQ page content"
 "Replace 'old company name' with 'new company name' in the About Us page"
 ```
