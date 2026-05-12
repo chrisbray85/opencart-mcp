@@ -448,10 +448,11 @@ def query(sql: str) -> str:
 
 @mcp.tool()
 def get_table_schema(table: str) -> str:
-    """Show columns for an OpenCart table. Prefix 'oc_' is added automatically if missing."""
+    """Show columns for an OpenCart table. The install's prefix (e.g. 'oc_') is added automatically if missing."""
 
-    if not table.startswith("oc_"):
-        table = f"oc_{table}"
+    prefix = db._get_prefix()
+    if not table.startswith(prefix):
+        table = f"{prefix}{table}"
 
     # Validate table name (alphanumeric + underscore only)
     if not re.match(r"^[a-zA-Z0-9_]+$", table):
@@ -462,9 +463,11 @@ def get_table_schema(table: str) -> str:
 
 
 @mcp.tool()
-def list_tables(pattern: str = "oc_%") -> str:
-    """List database tables matching pattern. Default: all OpenCart tables."""
+def list_tables(pattern: str | None = None) -> str:
+    """List database tables matching pattern. Default: all OpenCart tables (using detected prefix)."""
 
+    if pattern is None:
+        pattern = f"{db._get_prefix()}%"
     safe = pattern.replace("'", "\\'")
     rows = db.run_query(f"SHOW TABLES LIKE '{safe}'")
     return json.dumps(rows, indent=2)

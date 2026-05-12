@@ -1,6 +1,9 @@
 """SSH + PHP query executor for OpenCart MySQL, with DDEV support."""
 
 import json
+import os
+import re
+import shlex
 import subprocess
 
 import paramiko
@@ -9,6 +12,11 @@ from .config import Config
 
 # Noise patterns from cPanel .bashrc to filter from stderr
 _NOISE = ("tput:", "WARNING:", "post-quantum", "upgraded", "Unsuccessful stat")
+# rewrite upstream-hardcoded "oc_" prefix to detected prefix at query time
+_PREFIX_RE = re.compile(r"\boc_")
+_PHP_PREFIX_RE = re.compile(
+    r"""define\s*\(\s*['"]DB_PREFIX['"]\s*,\s*['"]([^'"]*)['"]\s*\)"""
+)
 
 
 class OpenCartDB:
@@ -18,6 +26,58 @@ class OpenCartDB:
         self.config = config
         self._client: paramiko.SSHClient | None = None
         self._use_ddev = config.is_ddev
+        self._prefix: str | None = None
+
+    # ── DB prefix detection ───────────────────────────────────────
+
+    def _get_prefix(self) -> str:
+        """Resolve the OpenCart DB_PREFIX (e.g. 'oc_'), cached after first call.
+
+        Order:
+          1. OPENCART_DB_PREFIX env var
+          2. Cached from a previous call
+          3. Read DB_PREFIX from the install's config.php (local file for
+             DDEV, over SSH for remote)
+        """
+        env = os.environ.get("OPENCART_DB_PREFIX")
+        if env is not None:
+            return env
+        if self._prefix is not None:
+            return self._prefix
+        source = ""
+        out = ""
+        err: Exception | None = None
+        try:
+            if self._use_ddev and self.config.local_root:
+                source = f"{self.config.local_root}/config.php"
+                with open(source) as f:
+                    out = f.read()
+            else:
+                source = f"{self.config.oc_root}/config.php"
+                cmd_argv = ["cat", source]
+                out, _ = self._exec(" ".join(shlex.quote(a) for a in cmd_argv))
+        except Exception as e:
+            err = e
+        m = _PHP_PREFIX_RE.search(out) if out else None
+        if not m:
+            hint = (
+                "set OPENCART_DB_PREFIX, or ensure DDEV is running and cwd is the project root"
+                if self._use_ddev
+                else "set OPENCART_DB_PREFIX, or verify OPENCART_ROOT/SSH access to config.php"
+            )
+            cause = f" (read error: {err})" if err else ""
+            raise RuntimeError(
+                f"Could not detect DB_PREFIX from {source}{cause}. {hint}"
+            )
+        self._prefix = m.group(1)
+        return self._prefix
+
+    def _retable(self, sql: str) -> str:
+        """Rewrite hardcoded 'oc_' table names to the install's actual prefix."""
+        prefix = self._get_prefix()
+        if prefix == "oc_":
+            return sql
+        return _PREFIX_RE.sub(prefix, sql)
 
     # ── DDEV backend ──────────────────────────────────────────────
 
@@ -93,6 +153,7 @@ class OpenCartDB:
 
     def run_query(self, sql: str) -> list[dict] | dict:
         """Execute SQL query and return results as list of dicts."""
+        sql = self._retable(sql)
         escaped_sql = sql.replace("\\", "\\\\").replace("'", "\\'")
 
         php = f"""<?php
