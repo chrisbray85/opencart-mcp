@@ -13,6 +13,11 @@ dist/
 build/
 *.egg-info/
 
+# Nix
+result
+result-*
+.direnv/
+
 # IDE / editor noise
 .vscode/
 .idea/
