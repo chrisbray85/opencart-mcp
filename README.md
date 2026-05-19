@@ -84,6 +84,42 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -e .
 ```
 
+<details>
+<summary><strong>Or install with Nix (flake)</strong></summary>
+
+Run it directly, no clone:
+
+```bash
+nix run github:chrisbray85/opencart-mcp
+```
+
+Install via a flake input (NixOS / home-manager) — adds the `opencart-mcp`
+binary to `PATH`:
+
+```nix
+{
+  inputs.opencart-mcp.url = "github:chrisbray85/opencart-mcp";
+
+  # then, in your NixOS configuration (configuration.nix / a module):
+  environment.systemPackages = [
+    inputs.opencart-mcp.packages.${pkgs.system}.default
+  ];
+
+  # …or home-manager:
+  home.packages = [
+    inputs.opencart-mcp.packages.${pkgs.system}.default
+  ];
+}
+```
+
+Dev shell with all deps (skip the venv steps above):
+
+```bash
+nix develop
+```
+
+</details>
+
 ### 2. Configure
 
 ```bash
