@@ -450,7 +450,7 @@ def query(sql: str) -> str:
 def get_table_schema(table: str) -> str:
     """Show columns for an OpenCart table. The install's prefix (e.g. 'oc_') is added automatically if missing."""
 
-    prefix = db._get_prefix()
+    prefix = db._get_config()["PREFIX"]
     if not table.startswith(prefix):
         table = f"{prefix}{table}"
 
@@ -467,7 +467,7 @@ def list_tables(pattern: str | None = None) -> str:
     """List database tables matching pattern. Default: all OpenCart tables (using detected prefix)."""
 
     if pattern is None:
-        pattern = f"{db._get_prefix()}%"
+        pattern = f"{db._get_config()['PREFIX']}%"
     safe = pattern.replace("'", "\\'")
     rows = db.run_query(f"SHOW TABLES LIKE '{safe}'")
     return json.dumps(rows, indent=2)

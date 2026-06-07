@@ -1,7 +1,6 @@
 """SSH + PHP query executor for OpenCart MySQL, with DDEV support."""
 
 import json
-import os
 import re
 import shlex
 import subprocess
@@ -14,8 +13,9 @@ from .config import Config
 _NOISE = ("tput:", "WARNING:", "post-quantum", "upgraded", "Unsuccessful stat")
 # rewrite upstream-hardcoded "oc_" prefix to detected prefix at query time
 _PREFIX_RE = re.compile(r"\boc_")
-_PHP_PREFIX_RE = re.compile(
-    r"""define\s*\(\s*['"]DB_PREFIX['"]\s*,\s*['"]([^'"]*)['"]\s*\)"""
+# capture every DB_* define from config.php, keyed without the "DB_" prefix
+_PHP_DB_RE = re.compile(
+    r"""define\s*\(\s*['"]DB_(\w+)['"]\s*,\s*['"]([^'"]*)['"]\s*\)"""
 )
 
 
@@ -26,24 +26,41 @@ class OpenCartDB:
         self.config = config
         self._client: paramiko.SSHClient | None = None
         self._use_ddev = config.is_ddev
-        self._prefix: str | None = None
+        self._database: dict[str, str] | None = None
 
-    # ── DB prefix detection ───────────────────────────────────────
+    # ── DB config detection ───────────────────────────────────────
 
-    def _get_prefix(self) -> str:
-        """Resolve the OpenCart DB_PREFIX (e.g. 'oc_'), cached after first call.
+    def _get_config(self) -> dict[str, str]:
+        """Resolve the OpenCart DB_* settings, cached after first call.
 
-        Order:
-          1. OPENCART_DB_PREFIX env var
-          2. Cached from a previous call
-          3. Read DB_PREFIX from the install's config.php (local file for
-             DDEV, over SSH for remote)
+        Returns a dict keyed by the define name without the "DB_" prefix,
+        e.g. self._database['PREFIX'], ['HOSTNAME'], ['USERNAME'], ['PASSWORD'],
+        ['DATABASE']. Values from self.config (env) take priority; any missing
+        field is read from config.php.
         """
-        env = os.environ.get("OPENCART_DB_PREFIX")
-        if env is not None:
-            return env
-        if self._prefix is not None:
-            return self._prefix
+        if self._database is not None:
+            return self._database
+
+        # env vars take priority over config.php
+        self._database = {}
+        if self.config.db_host:
+            self._database["HOSTNAME"] = self.config.db_host
+        if self.config.db_user:
+            self._database["USERNAME"] = self.config.db_user
+        if self.config.db_pass:
+            self._database["PASSWORD"] = self.config.db_pass
+        if self.config.db_name:
+            self._database["DATABASE"] = self.config.db_name
+        if self.config.db_prefix:
+            self._database["PREFIX"] = self.config.db_prefix
+            
+        if not self._database.get("HOSTNAME") and self.config.is_ddev:
+            self._database["HOSTNAME"] = "db"
+
+        required = ("HOSTNAME", "USERNAME", "PASSWORD", "DATABASE", "PREFIX")
+        if all(k in self._database for k in required):
+            return self._database
+
         source = ""
         out = ""
         err: Exception | None = None
@@ -58,23 +75,28 @@ class OpenCartDB:
                 out, _ = self._exec(" ".join(shlex.quote(a) for a in cmd_argv))
         except Exception as e:
             err = e
-        m = _PHP_PREFIX_RE.search(out) if out else None
-        if not m:
+        # fill any missing database credentials from config.php DB_* defines
+        php_config = {k: v for k, v in _PHP_DB_RE.findall(out)} if out else {}
+        for key in required:
+            if key not in self._database and key in php_config:
+                self._database[key] = php_config[key]
+        missing = [k for k in required if k not in self._database]
+        if missing:
             hint = (
-                "set OPENCART_DB_PREFIX, or ensure DDEV is running and cwd is the project root"
+                "set OPENCART_DB_* env vars, or ensure DDEV is running and cwd is the project root"
                 if self._use_ddev
-                else "set OPENCART_DB_PREFIX, or verify OPENCART_ROOT/SSH access to config.php"
+                else "set OPENCART_DB_* env vars, or verify OPENCART_ROOT/SSH access to config.php"
             )
             cause = f" (read error: {err})" if err else ""
+            keys = ", ".join(f"DB_{k}" for k in missing)
             raise RuntimeError(
-                f"Could not detect DB_PREFIX from {source}{cause}. {hint}"
+                f"Could not detect {keys} from {source}{cause}. {hint}"
             )
-        self._prefix = m.group(1)
-        return self._prefix
+        return self._database
 
     def _retable(self, sql: str) -> str:
         """Rewrite hardcoded 'oc_' table names to the install's actual prefix."""
-        prefix = self._get_prefix()
+        prefix = self._get_config()["PREFIX"]
         if prefix == "oc_":
             return sql
         return _PREFIX_RE.sub(prefix, sql)
@@ -155,10 +177,11 @@ class OpenCartDB:
         """Execute SQL query and return results as list of dicts."""
         sql = self._retable(sql)
         escaped_sql = sql.replace("\\", "\\\\").replace("'", "\\'")
+        cfg = self._get_config()
 
         php = f"""<?php
 error_reporting(0);
-$db = new mysqli('{"db" if self.config.is_ddev else "localhost"}', '{self.config.db_user}', '{self.config.db_pass}', '{self.config.db_name}');
+$db = new mysqli('{cfg["HOSTNAME"]}', '{cfg["USERNAME"]}', '{cfg["PASSWORD"]}', '{cfg["DATABASE"]}');
 if ($db->connect_error) {{
     echo json_encode(["error" => "DB connect failed: " . $db->connect_error]);
     exit;
