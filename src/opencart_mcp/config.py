@@ -9,6 +9,7 @@ class Config:
     ssh_host: str
     ssh_user: str
     ssh_key: str  # path to SSH private key
+    ssh_port: int  # SSH port; defaults to 22 if OPENCART_SSH_PORT is unset
     db_host: str  # MySQL host; if empty, DB_HOSTNAME from config.php is used
     db_user: str
     db_pass: str
@@ -38,6 +39,7 @@ class Config:
             ssh_host=ssh_host,
             ssh_user=os.environ.get("OPENCART_SSH_USER", ""),
             ssh_key=os.environ.get("OPENCART_SSH_KEY", os.path.expanduser("~/.ssh/id_ed25519")),
+            ssh_port=int(os.environ.get("OPENCART_SSH_PORT", "22")),
             db_host=os.environ.get("OPENCART_DB_HOST", ""),
             db_user=os.environ.get("OPENCART_DB_USER", ""),
             db_pass=os.environ.get("OPENCART_DB_PASS", ""),

@@ -135,6 +135,7 @@ class OpenCartDB:
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         client.connect(
             hostname=self.config.ssh_host,
+            port=self.config.ssh_port,
             username=self.config.ssh_user,
             key_filename=self.config.ssh_key,
             timeout=15,
