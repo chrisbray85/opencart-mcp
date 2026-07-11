@@ -3,6 +3,8 @@
 import os
 from dataclasses import dataclass
 
+from dotenv import load_dotenv
+
 
 @dataclass
 class Config:
@@ -25,6 +27,7 @@ class Config:
 
     @classmethod
     def from_env(cls) -> "Config":
+        load_dotenv()  # the documented setup flow writes .env; nothing else read it
         ssh_host = os.environ.get("OPENCART_SSH_HOST", "")
         local_root = os.environ.get("OPENCART_ROOT", "")
 
@@ -32,13 +35,13 @@ class Config:
             oc_root = "/var/www/html"
             storage_dir = f"{oc_root}/system/storage"
         else:
-            oc_root = local_root or os.environ.get("OPENCART_ROOT", "")
+            oc_root = local_root
             storage_dir = os.environ.get("OPENCART_STORAGE", f"{oc_root}/system/storage")
 
         return cls(
             ssh_host=ssh_host,
             ssh_user=os.environ.get("OPENCART_SSH_USER", ""),
-            ssh_key=os.environ.get("OPENCART_SSH_KEY", os.path.expanduser("~/.ssh/id_ed25519")),
+            ssh_key=os.path.expanduser(os.environ.get("OPENCART_SSH_KEY", "~/.ssh/id_ed25519")),
             ssh_port=int(os.environ.get("OPENCART_SSH_PORT", "22")),
             db_host=os.environ.get("OPENCART_DB_HOST", ""),
             db_user=os.environ.get("OPENCART_DB_USER", ""),

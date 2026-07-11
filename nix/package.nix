@@ -6,7 +6,7 @@
 
 python3Packages.buildPythonPackage {
   pname = "opencart-mcp";
-  version = "0.4.1";
+  version = "0.5.1";
   __structuredAttrs = true;
 
   inherit src;
