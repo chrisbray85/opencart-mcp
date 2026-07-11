@@ -1,6 +1,6 @@
 # OpenCart MCP Server
 
-Query and edit your OpenCart store from Claude Code. Products, orders, customers, Journal3 modules, SEO URLs, CMS pages — 36 tools, all through natural language.
+Query and edit your OpenCart store from Claude Code. Products, orders, customers, Journal3 modules, SEO URLs, CMS pages — 42 tools, all through natural language.
 
 Built for store owners and developers who are tired of SSH + phpMyAdmin + admin panel clicking to get simple answers.
 
@@ -307,9 +307,9 @@ These all work out of the box. Just type them into Claude Code.
 
 ---
 
-## All 36 tools
+## All 42 tools
 
-### Read (24)
+### Read (27)
 
 | Tool | What it does |
 |------|-------------|
@@ -337,8 +337,11 @@ These all work out of the box. Just type them into Claude Code.
 | `get_table_schema` | Column definitions for any table |
 | `list_tables` | List tables matching a pattern |
 | `get_file` | Read files from the server (path traversal blocked) |
+| `get_coupons` | List discount coupons with usage counts |
+| `get_vouchers` | List gift vouchers |
+| `dashboard` | One-call store overview — revenue, order statuses, stock alerts, latest orders |
 
-### Write (12)
+### Write (15)
 
 | Tool | What it does |
 |------|-------------|
@@ -353,7 +356,10 @@ These all work out of the box. Just type them into Claude Code.
 | `write_file` | Write files to server via SFTP |
 | `run_sql` | Execute INSERT/UPDATE/DELETE (DDL blocked) |
 | `clear_cache` | Flush OpenCart + Journal3 caches |
-| `refresh_modifications` | Recompile OCMOD modification cache |
+| `refresh_modifications` | Clear OCMOD modification cache |
+| `update_order_status` | Change order status + append order history |
+| `create_coupon` | Create a discount coupon (percentage or fixed) |
+| `update_coupon` | Enable/disable, extend, or edit a coupon |
 
 ---
 
@@ -470,11 +476,11 @@ Check your `config.php` — both `DIR_APPLICATION` and `DIR_STORAGE` are defined
 ## Roadmap
 
 - [ ] OpenCart 4.x support
-- [ ] Coupon and voucher management tools
-- [ ] Order status update tool
+- [x] Coupon and voucher management tools *(v0.6.0)*
+- [x] Order status update tool *(v0.6.0)*
 - [ ] Bulk product import/export
 - [ ] Customer group management
-- [ ] Dashboard summary tool (one prompt, full store overview)
+- [x] Dashboard summary tool (one prompt, full store overview) *(v0.6.0)*
 
 Got a feature request? [Open an issue](https://github.com/chrisbray85/opencart-mcp/issues).
 

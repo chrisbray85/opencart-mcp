@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "opencart-mcp"
-version = "0.5.1"
+version = "0.6.0"
 description = "MCP server for OpenCart — query products, orders, settings, and modules via Claude Code or any MCP client. Supports remote VPS (SSH) and local DDEV development."
 requires-python = ">=3.10"
 license = "MIT"

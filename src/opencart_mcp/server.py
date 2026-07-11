@@ -901,6 +901,236 @@ def get_stock_report(limit: int = 200) -> str:
     return json.dumps(rows)
 
 
+# ─── ORDERS, COUPONS, DASHBOARD ──────────────────────────────
+
+
+@mcp.tool()
+def update_order_status(
+    order_id: int,
+    order_status_id: int,
+    comment: str = "",
+    notify: bool = False,
+) -> str:
+    """Change an order's status and append an order-history entry — the same
+    thing the admin status dropdown does. notify=True marks the history row
+    as customer-notified but does NOT send the email itself.
+    Use get_order_statuses to look up status IDs."""
+
+    order = db.run_query(
+        f"SELECT order_id, order_status_id FROM oc_order WHERE order_id = {int(order_id)}"
+    )
+    if not order:
+        return json.dumps({"error": f"Order {order_id} not found"})
+
+    status_row = db.run_query(
+        f"SELECT name FROM oc_order_status WHERE order_status_id = {int(order_status_id)} AND language_id = 1"
+    )
+    if not status_row:
+        return json.dumps({"error": f"Unknown order_status_id {order_status_id} — see get_order_statuses"})
+
+    result = db.run_query(
+        f"UPDATE oc_order SET order_status_id = {int(order_status_id)}, date_modified = NOW() "
+        f"WHERE order_id = {int(order_id)}"
+    )
+    db.run_query(
+        "INSERT INTO oc_order_history (order_id, order_status_id, notify, comment, date_added) "
+        f"VALUES ({int(order_id)}, {int(order_status_id)}, {1 if notify else 0}, '{esc(comment)}', NOW())"
+    )
+    return json.dumps({
+        **_update_status(result),
+        "order_id": order_id,
+        "previous_status_id": int(order[0]["order_status_id"]),
+        "new_status_id": order_status_id,
+        "new_status": status_row[0]["name"],
+        "history_added": True,
+    })
+
+
+@mcp.tool()
+def get_coupons(search: str = "", include_disabled: bool = False, limit: int = 50) -> str:
+    """List discount coupons with usage counts. Search by code or name.
+    Default: enabled, unexpired coupons only."""
+
+    where = "WHERE 1=1"
+    if search:
+        where += f" AND (c.code LIKE '%{esc(search)}%' OR c.name LIKE '%{esc(search)}%')"
+    if not include_disabled:
+        where += " AND c.status = 1 AND c.date_end >= CURDATE()"
+
+    sql = f"""
+        SELECT c.coupon_id, c.code, c.name, c.type, c.discount,
+               c.total AS min_order_total, c.shipping AS free_shipping,
+               c.date_start, c.date_end, c.uses_total, c.uses_customer, c.status,
+               (SELECT COUNT(*) FROM oc_coupon_history ch WHERE ch.coupon_id = c.coupon_id) AS times_used
+        FROM oc_coupon c
+        {where}
+        ORDER BY c.date_added DESC
+        LIMIT {int(limit)}
+    """
+    rows = db.run_query(sql)
+    return json.dumps(rows)
+
+
+@mcp.tool()
+def create_coupon(
+    code: str,
+    name: str,
+    discount: float,
+    type: str = "P",
+    min_order_total: float = 0,
+    days_valid: int = 30,
+    uses_total: int = 0,
+    uses_per_customer: int = 1,
+    free_shipping: bool = False,
+    logged_in_only: bool = False,
+) -> str:
+    """Create a discount coupon, enabled and valid from today.
+    type: 'P' = percentage, 'F' = fixed amount. uses_total=0 = unlimited
+    total uses; uses_per_customer=0 = unlimited per customer."""
+
+    if type not in ("P", "F"):
+        return json.dumps({"error": "type must be 'P' (percentage) or 'F' (fixed amount)"})
+    if len(code) > 20:
+        return json.dumps({"error": "code must be 20 characters or fewer (oc_coupon.code is varchar(20))"})
+
+    existing = db.run_query(f"SELECT coupon_id FROM oc_coupon WHERE code = '{esc(code)}'")
+    if existing:
+        return json.dumps({"error": f"Coupon code '{code}' already exists (coupon_id {existing[0]['coupon_id']})"})
+
+    # NB uses_customer is varchar(11) in the OC3 schema — quoted deliberately
+    result = db.run_query(
+        "INSERT INTO oc_coupon (name, code, type, discount, logged, shipping, total, "
+        "date_start, date_end, uses_total, uses_customer, status, date_added) VALUES "
+        f"('{esc(name)}', '{esc(code)}', '{type}', {float(discount)}, "
+        f"{1 if logged_in_only else 0}, {1 if free_shipping else 0}, {float(min_order_total)}, "
+        f"CURDATE(), DATE_ADD(CURDATE(), INTERVAL {int(days_valid)} DAY), "
+        f"{int(uses_total)}, '{int(uses_per_customer)}', 1, NOW())"
+    )
+    return json.dumps({
+        "created": True,
+        "coupon_id": result.get("insert_id") if isinstance(result, dict) else None,
+        "code": code,
+        "type": type,
+        "discount": discount,
+        "days_valid": days_valid,
+    })
+
+
+@mcp.tool()
+def update_coupon(
+    coupon_id: int,
+    status: int | None = None,
+    discount: float | None = None,
+    date_end: str | None = None,
+    uses_total: int | None = None,
+    name: str | None = None,
+) -> str:
+    """Update a coupon: enable/disable (status 1/0), change discount,
+    extend date_end (YYYY-MM-DD), adjust total-use limit, or rename.
+    Only specified fields are changed."""
+
+    updates = []
+    if status is not None:
+        updates.append(f"status = {int(status)}")
+    if discount is not None:
+        updates.append(f"discount = {float(discount)}")
+    if date_end is not None:
+        if not re.match(r"^\d{4}-\d{2}-\d{2}$", date_end):
+            return json.dumps({"error": "date_end must be YYYY-MM-DD"})
+        updates.append(f"date_end = '{date_end}'")
+    if uses_total is not None:
+        updates.append(f"uses_total = {int(uses_total)}")
+    if name is not None:
+        updates.append(f"name = '{esc(name)}'")
+
+    if not updates:
+        return json.dumps({"error": "No fields to update"})
+
+    result = db.run_query(
+        f"UPDATE oc_coupon SET {', '.join(updates)} WHERE coupon_id = {int(coupon_id)}"
+    )
+    return json.dumps({**_update_status(result), "coupon_id": coupon_id})
+
+
+@mcp.tool()
+def get_vouchers(limit: int = 50) -> str:
+    """List gift vouchers with amount, sender/recipient, and status."""
+
+    sql = f"""
+        SELECT voucher_id, order_id, code, from_name, to_name, to_email,
+               amount, status, date_added
+        FROM oc_voucher
+        ORDER BY date_added DESC
+        LIMIT {int(limit)}
+    """
+    return json.dumps(db.run_query(sql))
+
+
+@mcp.tool()
+def dashboard(low_stock_threshold: int = 5) -> str:
+    """One-call store overview: revenue today / 7 days / 30 days, order status
+    breakdown, stock alerts, and the latest orders. The 'give me a store
+    summary' tool. Excludes cancelled/failed/refunded orders from revenue."""
+
+    excluded = "(0, 7, 8, 10, 14, 11, 12)"
+
+    revenue = db.run_query(f"""
+        SELECT
+            COUNT(CASE WHEN date_added >= CURDATE() THEN 1 END) AS orders_today,
+            ROUND(COALESCE(SUM(CASE WHEN date_added >= CURDATE() THEN total END), 0), 2) AS revenue_today,
+            COUNT(CASE WHEN date_added >= DATE_SUB(NOW(), INTERVAL 7 DAY) THEN 1 END) AS orders_7d,
+            ROUND(COALESCE(SUM(CASE WHEN date_added >= DATE_SUB(NOW(), INTERVAL 7 DAY) THEN total END), 0), 2) AS revenue_7d,
+            COUNT(*) AS orders_30d,
+            ROUND(COALESCE(SUM(total), 0), 2) AS revenue_30d,
+            ROUND(COALESCE(AVG(total), 0), 2) AS avg_order_30d
+        FROM oc_order
+        WHERE date_added >= DATE_SUB(NOW(), INTERVAL 30 DAY)
+          AND order_status_id NOT IN {excluded}
+    """)
+
+    statuses = db.run_query("""
+        SELECT os.name AS status, COUNT(*) AS orders
+        FROM oc_order o
+        LEFT JOIN oc_order_status os ON o.order_status_id = os.order_status_id AND os.language_id = 1
+        WHERE o.date_added >= DATE_SUB(NOW(), INTERVAL 30 DAY) AND o.order_status_id > 0
+        GROUP BY os.name
+        ORDER BY orders DESC
+    """)
+
+    stock = db.run_query(f"""
+        SELECT COUNT(*) AS active_products,
+               COUNT(CASE WHEN quantity <= 0 THEN 1 END) AS out_of_stock,
+               COUNT(CASE WHEN quantity BETWEEN 1 AND {int(low_stock_threshold)} THEN 1 END) AS low_stock
+        FROM oc_product
+        WHERE status = 1
+    """)
+
+    lowest = db.run_query("""
+        SELECT p.product_id, pd.name, p.quantity
+        FROM oc_product p
+        JOIN oc_product_description pd ON p.product_id = pd.product_id AND pd.language_id = 1
+        WHERE p.status = 1
+        ORDER BY p.quantity ASC
+        LIMIT 5
+    """)
+
+    latest = db.run_query("""
+        SELECT o.order_id, CONCAT(o.firstname, ' ', o.lastname) AS customer,
+               o.total, os.name AS status, o.date_added
+        FROM oc_order o
+        LEFT JOIN oc_order_status os ON o.order_status_id = os.order_status_id AND os.language_id = 1
+        ORDER BY o.date_added DESC
+        LIMIT 5
+    """)
+
+    return json.dumps({
+        "revenue": revenue[0] if revenue else {},
+        "order_status_breakdown_30d": statuses,
+        "stock": {**(stock[0] if stock else {}), "lowest_5": lowest},
+        "latest_orders": latest,
+    })
+
+
 def main():
     mcp.run(transport="stdio")
 
