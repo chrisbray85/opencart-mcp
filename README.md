@@ -143,6 +143,16 @@ OPENCART_STORAGE=/path/to/storage
 > - `OPENCART_ROOT` — the directory containing `index.php`, `admin/`, `catalog/`, `system/`
 > - `OPENCART_STORAGE` — check your `config.php` for the `DIR_STORAGE` value (often outside the web root on OpenCart 3.0.3.3+)
 
+Optional extras:
+
+```env
+OPENCART_SSH_PORT=22           # if SSH runs on a non-standard port
+OPENCART_DB_HOST=localhost     # if MySQL isn't on the same host (e.g. a tunnel)
+OPENCART_DB_PREFIX=oc_         # table prefix override
+```
+
+Any `OPENCART_DB_*` value you leave unset is read from the install's `config.php` automatically, so on most setups the main block above is all you need.
+
 #### Using DDEV for local development?
 
 Set `OPENCART_SSH_HOST=ddev` and point `OPENCART_ROOT` at the local project directory — commands will run via `ddev exec` inside your container instead of SSH:
@@ -479,6 +489,11 @@ See [releases](https://github.com/chrisbray85/opencart-mcp/releases) for full hi
 ## Contributing
 
 Issues and PRs welcome. If you're running this on a hosting setup or OpenCart version not listed above, let us know what works and what doesn't.
+
+Thanks to the contributors so far:
+
+- [@IceDBorn](https://github.com/IceDBorn) — DDEV support and the Nix flake
+- [@ClayRabbit](https://github.com/ClayRabbit) — configurable SSH port and full `config.php` DB fallback
 
 ## License
 
