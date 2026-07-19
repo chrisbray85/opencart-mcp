@@ -545,10 +545,28 @@ def list_tables(pattern: str | None = None) -> str:
     return json.dumps(rows)
 
 
+# Cap MCP response size; OpenCart error.log can be hundreds of MB.
+_GET_FILE_MAX_LINES = 2000
+# When from_end+grep, only scan this many trailing lines (avoid full-file grep).
+_GET_FILE_GREP_WINDOW = 50000
+
+
 @mcp.tool()
-def get_file(path: str, max_lines: int = 200) -> str:
+def get_file(
+    path: str,
+    max_lines: int = 200,
+    from_end: bool = False,
+    grep: str = "",
+) -> str:
     """Read a file from the VPS. Path is relative to OpenCart root unless absolute.
-    Returns first max_lines lines. Requires SSH or DDEV."""
+
+    By default returns the first max_lines lines (head). Set from_end=True for the
+    last max_lines (tail) — preferred for large logs such as error.log.
+    Optional grep is a fixed substring filter (not a regex). With from_end=True,
+    grep only searches the last ~50k lines so huge logs stay fast; with
+    from_end=False, grep scans the whole file then takes the first max_lines
+    matches (can be slow on very large files). max_lines is capped at 2000.
+    Requires SSH or DDEV."""
 
     blocked = _shell_error()
     if blocked:
@@ -563,8 +581,27 @@ def get_file(path: str, max_lines: int = 200) -> str:
     if ".." in path:
         return json.dumps({"error": "Path traversal not allowed"})
 
-    out = db.run_command(f"head -n {int(max_lines)} {shlex.quote(full_path)}")
-    return out
+    n = max(1, min(int(max_lines), _GET_FILE_MAX_LINES))
+    quoted = shlex.quote(full_path)
+    pattern = grep.strip()
+
+    if pattern:
+        quoted_pat = shlex.quote(pattern)
+        if from_end:
+            window = max(n, _GET_FILE_GREP_WINDOW)
+            cmd = (
+                f"tail -n {window} {quoted} | grep -F -- {quoted_pat} | tail -n {n}"
+            )
+        else:
+            cmd = f"grep -F -- {quoted_pat} {quoted} | head -n {n}"
+        # grep exits 1 when there are no matches; run_command ignores exit codes.
+        return db.run_command(cmd, timeout=60)
+
+    if from_end:
+        cmd = f"tail -n {n} {quoted}"
+    else:
+        cmd = f"head -n {n} {quoted}"
+    return db.run_command(cmd)
 
 
 # ─── WRITE TOOLS ─────────────────────────────────────────────

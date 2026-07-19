@@ -355,7 +355,7 @@ These all work out of the box. Just type them into Claude Code.
 | `query` | Custom read-only SQL (SELECT/SHOW/DESCRIBE/EXPLAIN only) |
 | `get_table_schema` | Column definitions for any table |
 | `list_tables` | List tables matching a pattern |
-| `get_file` | Read files from the server (path traversal blocked) |
+| `get_file` | Read files from the server (`from_end` for tail, optional fixed-string `grep`; path traversal blocked). Large logs: prefer `from_end=True`; with grep, only the last ~50k lines are scanned |
 | `get_coupons` | List discount coupons with usage counts |
 | `get_vouchers` | List gift vouchers |
 | `dashboard` | One-call store overview — revenue, order statuses, stock alerts, latest orders |
