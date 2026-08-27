@@ -13,6 +13,7 @@ class Config:
     ssh_key: str  # path to SSH private key
     ssh_port: int  # SSH port; defaults to 22 if OPENCART_SSH_PORT is unset
     db_host: str  # MySQL host; if empty, DB_HOSTNAME from config.php is used
+    db_port: int  # MySQL port for direct connections
     db_user: str
     db_pass: str
     db_name: str
@@ -20,10 +21,16 @@ class Config:
     oc_root: str  # OpenCart root directory (container path for DDEV)
     storage_dir: str  # Storage directory (container path for DDEV)
     local_root: str  # Local project path (cwd for ddev commands)
+    language_id: int  # 0 = detect from oc_setting/oc_language
 
     @property
     def is_ddev(self) -> bool:
         return self.ssh_host.lower() == "ddev"
+
+    @property
+    def is_direct_mysql(self) -> bool:
+        """True when DB credentials are set and SSH/DDEV are not in use."""
+        return (not self.is_ddev) and (not self.ssh_host.strip())
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -38,12 +45,15 @@ class Config:
             oc_root = local_root
             storage_dir = os.environ.get("OPENCART_STORAGE", f"{oc_root}/system/storage")
 
+        language_raw = os.environ.get("OPENCART_LANGUAGE_ID", "0").strip() or "0"
+
         return cls(
             ssh_host=ssh_host,
             ssh_user=os.environ.get("OPENCART_SSH_USER", ""),
             ssh_key=os.path.expanduser(os.environ.get("OPENCART_SSH_KEY", "~/.ssh/id_ed25519")),
             ssh_port=int(os.environ.get("OPENCART_SSH_PORT", "22")),
             db_host=os.environ.get("OPENCART_DB_HOST", ""),
+            db_port=int(os.environ.get("OPENCART_DB_PORT", "3306")),
             db_user=os.environ.get("OPENCART_DB_USER", ""),
             db_pass=os.environ.get("OPENCART_DB_PASS", ""),
             db_name=os.environ.get("OPENCART_DB_NAME", ""),
@@ -51,4 +61,5 @@ class Config:
             oc_root=oc_root,
             storage_dir=storage_dir,
             local_root=local_root,
+            language_id=int(language_raw),
         )

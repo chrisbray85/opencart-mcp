@@ -6,7 +6,7 @@
 
 python3Packages.buildPythonPackage {
   pname = "opencart-mcp";
-  version = "0.6.0";
+  version = "0.7.0";
   __structuredAttrs = true;
 
   inherit src;
@@ -17,12 +17,13 @@ python3Packages.buildPythonPackage {
   propagatedBuildInputs = with python3Packages; [
     fastmcp
     paramiko
+    pymysql
     python-dotenv
   ];
 
   meta = {
-    description = "MCP server for OpenCart.";
-    homepage = "https://github.com/chrisbray85/opencart-mcp";
+    description = "MCP server for LiveStore / OpenCart 3 + Technics.";
+    homepage = "https://github.com/Penikov/livestore-mcp";
     license = lib.licenses.mit;
     maintainers = [ lib.maintainers.icedborn ];
   };

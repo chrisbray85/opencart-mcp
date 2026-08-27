@@ -1,4 +1,4 @@
-"""OpenCart MCP Server — query and manage OpenCart via Claude Code."""
+"""LiveStore MCP Server — query and manage LiveStore/OpenCart 3 + Technics."""
 
 import json
 import re
@@ -12,11 +12,41 @@ from .db import OpenCartDB
 config = Config.from_env()
 db = OpenCartDB(config)
 
+# LiveStore/ocStore: missing(0), cancelled(7), denied(8), canceled reversal(9),
+# failed(10), refunded(11), reversed(12), chargeback(13), expired(14), voided/fraud(16)
+EXCLUDED_ORDER_STATUS_IDS = "(0, 7, 8, 9, 10, 11, 12, 13, 14, 16)"
+
+_lang_id: int | None = None
+
 
 def esc(s: str) -> str:
     """Escape a value for interpolation into a single-quoted MySQL string.
     Backslash first, then quote — MySQL consumes backslash escapes."""
     return s.replace("\\", "\\\\").replace("'", "\\'")
+
+
+def lang_id() -> int:
+    """Storefront language_id: env override, else config_language, else first enabled."""
+    global _lang_id
+    if _lang_id is not None:
+        return _lang_id
+    if config.language_id:
+        _lang_id = int(config.language_id)
+        return _lang_id
+    rows = db.run_query("""
+        SELECT l.language_id
+        FROM oc_language l
+        JOIN oc_setting s ON s.`key` = 'config_language' AND s.store_id = 0 AND s.value = l.code
+        LIMIT 1
+    """)
+    if rows:
+        _lang_id = int(rows[0]["language_id"])
+        return _lang_id
+    rows = db.run_query(
+        "SELECT language_id FROM oc_language WHERE status = 1 ORDER BY language_id LIMIT 1"
+    )
+    _lang_id = int(rows[0]["language_id"]) if rows else 1
+    return _lang_id
 
 
 def _update_status(*results) -> dict:
@@ -31,16 +61,25 @@ def _update_status(*results) -> dict:
     return status
 
 
-def _j3_query(sql: str):
-    """Journal3 tables are optional — missing table means empty result, per README."""
+def _optional_query(sql: str):
+    """Technics/LiveStore extras are optional — missing table means empty result."""
     try:
         return db.run_query(sql)
     except RuntimeError as e:
-        if "doesn't exist" in str(e):
+        msg = str(e).lower()
+        if "doesn't exist" in msg or "unknown table" in msg:
             return []
         raise
 
-mcp = FastMCP("OpenCart")
+
+def _shell_error() -> str | None:
+    if config.is_direct_mysql:
+        return json.dumps({
+            "error": "File and cache tools need SSH or DDEV. Direct MySQL mode only runs SQL.",
+        })
+    return None
+
+mcp = FastMCP("LiveStore")
 
 
 # ─── READ TOOLS ──────────────────────────────────────────────
@@ -69,12 +108,12 @@ def get_products(
     sql = f"""
         SELECT p.product_id, pd.name, p.model, p.sku, p.price, p.quantity,
                p.stock_status_id, p.status, p.date_modified,
-               p.weight, p.image,
+               p.weight, p.image, p.noindex,
                su.keyword AS seo_url,
-               pd.meta_title, pd.meta_description{desc_col}
+               pd.meta_title, pd.meta_h1, pd.meta_description{desc_col}
         FROM oc_product p
-        JOIN oc_product_description pd ON p.product_id = pd.product_id AND pd.language_id = 1
-        LEFT JOIN oc_seo_url su ON su.query = CONCAT('product_id=', p.product_id) AND su.language_id = 1
+        JOIN oc_product_description pd ON p.product_id = pd.product_id AND pd.language_id = {lang_id()}
+        LEFT JOIN oc_seo_url su ON su.query = CONCAT('product_id=', p.product_id) AND su.language_id = {lang_id()}
         {where}
         ORDER BY pd.name
         LIMIT {int(limit)}
@@ -88,11 +127,11 @@ def get_product(product_id: int) -> str:
     """Get full details for a single product including images, options, and attributes."""
 
     sql = f"""
-        SELECT p.*, pd.name, pd.description, pd.meta_title, pd.meta_description, pd.tag,
+        SELECT p.*, pd.name, pd.description, pd.meta_title, pd.meta_h1, pd.meta_description, pd.tag,
                su.keyword AS seo_url
         FROM oc_product p
-        JOIN oc_product_description pd ON p.product_id = pd.product_id AND pd.language_id = 1
-        LEFT JOIN oc_seo_url su ON su.query = 'product_id={int(product_id)}' AND su.language_id = 1
+        JOIN oc_product_description pd ON p.product_id = pd.product_id AND pd.language_id = {lang_id()}
+        LEFT JOIN oc_seo_url su ON su.query = 'product_id={int(product_id)}' AND su.language_id = {lang_id()}
         WHERE p.product_id = {int(product_id)}
     """
     product = db.run_query(sql)
@@ -108,7 +147,7 @@ def get_product(product_id: int) -> str:
     cats = db.run_query(f"""
         SELECT cd.name, ptc.category_id
         FROM oc_product_to_category ptc
-        JOIN oc_category_description cd ON ptc.category_id = cd.category_id AND cd.language_id = 1
+        JOIN oc_category_description cd ON ptc.category_id = cd.category_id AND cd.language_id = {lang_id()}
         WHERE ptc.product_id = {int(product_id)}
     """)
 
@@ -118,8 +157,8 @@ def get_product(product_id: int) -> str:
                pov.quantity, pov.price, pov.price_prefix, pov.weight, pov.weight_prefix
         FROM oc_product_option_value pov
         JOIN oc_product_option po ON pov.product_option_id = po.product_option_id
-        JOIN oc_option_description od ON po.option_id = od.option_id AND od.language_id = 1
-        JOIN oc_option_value_description ovd ON pov.option_value_id = ovd.option_value_id AND ovd.language_id = 1
+        JOIN oc_option_description od ON po.option_id = od.option_id AND od.language_id = {lang_id()}
+        JOIN oc_option_value_description ovd ON pov.option_value_id = ovd.option_value_id AND ovd.language_id = {lang_id()}
         WHERE pov.product_id = {int(product_id)}
     """)
 
@@ -151,7 +190,7 @@ def get_orders(
                o.payment_method, o.shipping_method,
                o.shipping_city, o.shipping_postcode, o.shipping_country
         FROM oc_order o
-        LEFT JOIN oc_order_status os ON o.order_status_id = os.order_status_id AND os.language_id = 1
+        LEFT JOIN oc_order_status os ON o.order_status_id = os.order_status_id AND os.language_id = {lang_id()}
         {where}
         ORDER BY o.date_added DESC
         LIMIT {int(limit)}
@@ -167,7 +206,7 @@ def get_order(order_id: int) -> str:
     order = db.run_query(f"""
         SELECT o.*, os.name AS status_name
         FROM oc_order o
-        LEFT JOIN oc_order_status os ON o.order_status_id = os.order_status_id AND os.language_id = 1
+        LEFT JOIN oc_order_status os ON o.order_status_id = os.order_status_id AND os.language_id = {lang_id()}
         WHERE o.order_id = {int(order_id)}
     """)
     if not order:
@@ -189,7 +228,7 @@ def get_order(order_id: int) -> str:
     history = db.run_query(f"""
         SELECT oh.date_added, os.name AS status, oh.comment
         FROM oc_order_history oh
-        LEFT JOIN oc_order_status os ON oh.order_status_id = os.order_status_id AND os.language_id = 1
+        LEFT JOIN oc_order_status os ON oh.order_status_id = os.order_status_id AND os.language_id = {lang_id()}
         WHERE oh.order_id = {int(order_id)}
         ORDER BY oh.date_added DESC
     """)
@@ -228,12 +267,12 @@ def get_categories(parent_id: int = 0) -> str:
     """Get category tree. Set parent_id=0 for top-level categories."""
 
     sql = f"""
-        SELECT c.category_id, cd.name, c.parent_id, c.status, c.sort_order,
-               su.keyword AS seo_url,
+        SELECT c.category_id, cd.name, c.parent_id, c.status, c.sort_order, c.noindex,
+               su.keyword AS seo_url, cd.meta_h1,
                (SELECT COUNT(*) FROM oc_product_to_category ptc WHERE ptc.category_id = c.category_id) AS product_count
         FROM oc_category c
-        JOIN oc_category_description cd ON c.category_id = cd.category_id AND cd.language_id = 1
-        LEFT JOIN oc_seo_url su ON su.query = CONCAT('category_id=', c.category_id) AND su.language_id = 1
+        JOIN oc_category_description cd ON c.category_id = cd.category_id AND cd.language_id = {lang_id()}
+        LEFT JOIN oc_seo_url su ON su.query = CONCAT('category_id=', c.category_id) AND su.language_id = {lang_id()}
         WHERE c.parent_id = {int(parent_id)}
         ORDER BY c.sort_order, cd.name
     """
@@ -259,95 +298,88 @@ def get_settings(group: str = "", key: str = "") -> str:
 
 
 @mcp.tool()
-def get_j3_settings(pattern: str = "") -> str:
-    """Get Journal3 theme settings. Filter by setting_name pattern (SQL LIKE)."""
+def get_theme_settings(pattern: str = "") -> str:
+    """Get Technics theme settings from oc_setting (codes theme_technics*).
+    Filter by key pattern (SQL LIKE). License keys are omitted."""
 
-    where = "WHERE 1=1"
+    where = (
+        "WHERE store_id = 0 AND (code LIKE 'theme_technics%' OR `key` LIKE 'theme_technics%') "
+        "AND `key` NOT LIKE '%license%' AND `key` NOT LIKE '%_key'"
+    )
     if pattern:
-        safe = esc(pattern)
-        where += f" AND setting_name LIKE '{safe}'"
+        where += f" AND `key` LIKE '{esc(pattern)}'"
 
     sql = f"""
-        SELECT setting_name, setting_value
-        FROM oc_journal3_setting
+        SELECT setting_id, code, `key`, value, serialized
+        FROM oc_setting
         {where}
-        ORDER BY setting_name
-        LIMIT 100
+        ORDER BY code, `key`
     """
-    rows = _j3_query(sql)
-    return json.dumps(rows)
-
-
-@mcp.tool()
-def get_j3_skin_settings(pattern: str = "", skin_id: int = 1) -> str:
-    """Get Journal3 skin settings. Filter by setting_name pattern (SQL LIKE)."""
-
-    where = f"WHERE skin_id = {int(skin_id)}"
-    if pattern:
-        safe = esc(pattern)
-        where += f" AND setting_name LIKE '{safe}'"
-
-    sql = f"""
-        SELECT setting_name, setting_value
-        FROM oc_journal3_skin_setting
-        {where}
-        ORDER BY setting_name
-        LIMIT 100
-    """
-    rows = _j3_query(sql)
-    return json.dumps(rows)
+    return json.dumps(_optional_query(sql))
 
 
 @mcp.tool()
 def get_modules(module_type: str = "", search: str = "") -> str:
-    """List Journal3 modules. Filter by type (e.g. 'products', 'slider', 'product_tabs').
-    Search module_data content with search parameter."""
+    """List OpenCart modules from oc_module (Technics stores JSON in setting).
+    Filter by code substring (e.g. 'technics_main_slider', 'html'). Search name or setting."""
 
     where_parts = []
     if module_type:
-        safe = esc(module_type)
-        where_parts.append(f"module_type = '{safe}'")
+        where_parts.append(f"code LIKE '%{esc(module_type)}%'")
     if search:
-        safe = esc(search)
-        where_parts.append(f"module_data LIKE '%{safe}%'")
-
+        where_parts.append(f"(name LIKE '%{esc(search)}%' OR setting LIKE '%{esc(search)}%')")
     where = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
 
     sql = f"""
-        SELECT module_id, module_type,
-               SUBSTRING(module_data, 1, 200) AS module_data_preview
-        FROM oc_journal3_module
+        SELECT module_id, name, code,
+               LEFT(setting, 240) AS setting_preview
+        FROM oc_module
         {where}
-        ORDER BY module_type, module_id
+        ORDER BY code, module_id
     """
-    rows = _j3_query(sql)
-    return json.dumps(rows)
+    return json.dumps(db.run_query(sql))
 
 
 @mcp.tool()
-def get_j3_module(module_id: int) -> str:
-    """Get full Journal3 module data for a single module by ID.
-    Returns full JSON config — can be large for complex modules."""
+def get_module(module_id: int) -> str:
+    """Get full oc_module row including JSON setting. Can be large for sliders/tabs."""
 
-    sql = f"""
-        SELECT module_id, module_type, module_data
-        FROM oc_journal3_module
-        WHERE module_id = {int(module_id)}
-    """
-    rows = _j3_query(sql)
+    rows = db.run_query(
+        f"SELECT module_id, name, code, setting FROM oc_module WHERE module_id = {int(module_id)}"
+    )
     if not rows:
         return json.dumps({"error": f"Module {module_id} not found"})
     return json.dumps(rows[0])
 
 
 @mcp.tool()
+def get_layouts() -> str:
+    """List layouts, routes, and assigned modules (positions)."""
+
+    layouts = db.run_query("""
+        SELECT l.layout_id, l.name, lr.store_id, lr.route
+        FROM oc_layout l
+        LEFT JOIN oc_layout_route lr ON l.layout_id = lr.layout_id
+        ORDER BY l.layout_id, lr.route
+    """)
+    modules = db.run_query("""
+        SELECT lm.layout_module_id, lm.layout_id, l.name AS layout,
+               lm.code, lm.position, lm.sort_order
+        FROM oc_layout_module lm
+        JOIN oc_layout l ON l.layout_id = lm.layout_id
+        ORDER BY lm.layout_id, lm.position, lm.sort_order
+    """)
+    return json.dumps({"layouts": layouts, "modules": modules})
+
+
+@mcp.tool()
 def get_order_statuses() -> str:
     """List all order statuses with their IDs."""
 
-    sql = """
+    sql = f"""
         SELECT order_status_id, name
         FROM oc_order_status
-        WHERE language_id = 1
+        WHERE language_id = {lang_id()}
         ORDER BY order_status_id
     """
     rows = db.run_query(sql)
@@ -363,9 +395,9 @@ def get_product_attributes(product_id: int) -> str:
                agd.name AS attribute_group, pa.text AS value
         FROM oc_product_attribute pa
         JOIN oc_attribute a ON pa.attribute_id = a.attribute_id
-        JOIN oc_attribute_description ad ON a.attribute_id = ad.attribute_id AND ad.language_id = 1
-        JOIN oc_attribute_group_description agd ON a.attribute_group_id = agd.attribute_group_id AND agd.language_id = 1
-        WHERE pa.product_id = {int(product_id)} AND pa.language_id = 1
+        JOIN oc_attribute_description ad ON a.attribute_id = ad.attribute_id AND ad.language_id = {lang_id()}
+        JOIN oc_attribute_group_description agd ON a.attribute_group_id = agd.attribute_group_id AND agd.language_id = {lang_id()}
+        WHERE pa.product_id = {int(product_id)} AND pa.language_id = {lang_id()}
         ORDER BY agd.name, ad.name
     """
     rows = db.run_query(sql)
@@ -385,7 +417,7 @@ def sales_summary(days: int = 30, top_n: int = 20) -> str:
                COUNT(DISTINCT email) AS unique_customers
         FROM oc_order
         WHERE date_added >= DATE_SUB(NOW(), INTERVAL {int(days)} DAY)
-          AND order_status_id NOT IN (0, 7, 8, 10, 14, 11, 12)
+          AND order_status_id NOT IN {EXCLUDED_ORDER_STATUS_IDS}
     """)
 
     # Top products by units sold
@@ -396,9 +428,9 @@ def sales_summary(days: int = 30, top_n: int = 20) -> str:
                COUNT(DISTINCT op.order_id) AS order_count
         FROM oc_order_product op
         JOIN oc_order o ON op.order_id = o.order_id
-        JOIN oc_product_description pd ON op.product_id = pd.product_id AND pd.language_id = 1
+        JOIN oc_product_description pd ON op.product_id = pd.product_id AND pd.language_id = {lang_id()}
         WHERE o.date_added >= DATE_SUB(NOW(), INTERVAL {int(days)} DAY)
-          AND o.order_status_id NOT IN (0, 7, 8, 10, 14, 11, 12)
+          AND o.order_status_id NOT IN {EXCLUDED_ORDER_STATUS_IDS}
         GROUP BY op.product_id, pd.name
         ORDER BY units_sold DESC
         LIMIT {int(top_n)}
@@ -411,7 +443,7 @@ def sales_summary(days: int = 30, top_n: int = 20) -> str:
                ROUND(SUM(total), 2) AS revenue
         FROM oc_order
         WHERE date_added >= DATE_SUB(NOW(), INTERVAL {int(days)} DAY)
-          AND order_status_id NOT IN (0, 7, 8, 10, 14, 11, 12)
+          AND order_status_id NOT IN {EXCLUDED_ORDER_STATUS_IDS}
         GROUP BY DATE(date_added)
         ORDER BY date DESC
     """)
@@ -508,7 +540,11 @@ def list_tables(pattern: str | None = None) -> str:
 @mcp.tool()
 def get_file(path: str, max_lines: int = 200) -> str:
     """Read a file from the VPS. Path is relative to OpenCart root unless absolute.
-    Returns first max_lines lines."""
+    Returns first max_lines lines. Requires SSH or DDEV."""
+
+    blocked = _shell_error()
+    if blocked:
+        return blocked
 
     if not path.startswith("/"):
         full_path = f"{config.oc_root}/{path}"
@@ -533,10 +569,13 @@ def update_product(
     quantity: int | None = None,
     status: int | None = None,
     meta_title: str | None = None,
+    meta_h1: str | None = None,
     meta_description: str | None = None,
     name: str | None = None,
+    noindex: int | None = None,
 ) -> str:
-    """Update product fields. Only specified fields are changed."""
+    """Update product fields. Only specified fields are changed.
+    LiveStore extras: meta_h1, noindex (0/1)."""
 
     updates_product = []
     updates_desc = []
@@ -547,10 +586,15 @@ def update_product(
         updates_product.append(f"quantity = {int(quantity)}")
     if status is not None:
         updates_product.append(f"status = {int(status)}")
+    if noindex is not None:
+        updates_product.append(f"noindex = {int(noindex)}")
 
     if meta_title is not None:
         safe = esc(meta_title)
         updates_desc.append(f"meta_title = '{safe}'")
+    if meta_h1 is not None:
+        safe = esc(meta_h1)
+        updates_desc.append(f"meta_h1 = '{safe}'")
     if meta_description is not None:
         safe = esc(meta_description)
         updates_desc.append(f"meta_description = '{safe}'")
@@ -568,7 +612,7 @@ def update_product(
         results.append({"table": "oc_product", "result": r})
 
     if updates_desc:
-        sql = f"UPDATE oc_product_description SET {', '.join(updates_desc)} WHERE product_id = {int(product_id)} AND language_id = 1"
+        sql = f"UPDATE oc_product_description SET {', '.join(updates_desc)} WHERE product_id = {int(product_id)} AND language_id = {lang_id()}"
         r = db.run_query(sql)
         results.append({"table": "oc_product_description", "result": r})
 
@@ -591,53 +635,37 @@ def update_setting(group: str, key: str, value: str) -> str:
 
 
 @mcp.tool()
-def update_j3_setting(setting_name: str, setting_value: str) -> str:
-    """Update a Journal3 theme setting."""
+def update_theme_setting(key: str, value: str, group: str = "theme_technics") -> str:
+    """Update a Technics setting in oc_setting. Default group theme_technics.
+    License keys cannot be changed through this tool."""
 
-    safe_name = esc(setting_name)
-    safe_value = esc(setting_value)
+    if "license" in key.lower() or key.endswith("_key"):
+        return json.dumps({"error": "License/key settings cannot be updated via MCP"})
 
     result = db.run_query(
-        f"UPDATE oc_journal3_setting SET setting_value = '{safe_value}' WHERE setting_name = '{safe_name}'"
+        f"UPDATE oc_setting SET value = '{esc(value)}' "
+        f"WHERE code = '{esc(group)}' AND `key` = '{esc(key)}' AND store_id = 0"
     )
-    return json.dumps({**_update_status(result), "setting_name": setting_name, "result": result})
+    return json.dumps({**_update_status(result), "code": group, "key": key, "result": result})
 
 
 @mcp.tool()
-def update_j3_skin_setting(setting_name: str, setting_value: str, skin_id: int = 1) -> str:
-    """Update a Journal3 skin setting."""
+def update_module(module_id: int, find: str, replace: str) -> str:
+    """Find/replace text inside an oc_module setting JSON blob.
+    Use get_module first to see the current content."""
 
-    safe_name = esc(setting_name)
-    safe_value = esc(setting_value)
-
-    result = db.run_query(
-        f"UPDATE oc_journal3_skin_setting SET setting_value = '{safe_value}' WHERE setting_name = '{safe_name}' AND skin_id = {int(skin_id)}"
-    )
-    return json.dumps({**_update_status(result), "setting_name": setting_name, "result": result})
-
-
-@mcp.tool()
-def update_j3_module(module_id: int, find: str, replace: str) -> str:
-    """Update text within a Journal3 module's JSON data using find/replace.
-    Safer than rewriting the entire module — only changes the matched text.
-    Use get_j3_module first to see the current content."""
-
-    # Fetch current module data
-    rows = db.run_query(f"SELECT module_data FROM oc_journal3_module WHERE module_id = {int(module_id)}")
+    rows = db.run_query(f"SELECT setting FROM oc_module WHERE module_id = {int(module_id)}")
     if not rows:
         return json.dumps({"error": f"Module {module_id} not found"})
 
-    current = rows[0]["module_data"]
-
+    current = rows[0]["setting"]
     if find not in current:
         return json.dumps({"error": f"Text '{find}' not found in module {module_id}"})
 
     count = current.count(find)
     updated = current.replace(find, replace)
-
-    safe_updated = esc(updated)
     result = db.run_query(
-        f"UPDATE oc_journal3_module SET module_data = '{safe_updated}' WHERE module_id = {int(module_id)}"
+        f"UPDATE oc_module SET setting = '{esc(updated)}' WHERE module_id = {int(module_id)}"
     )
     return json.dumps({
         **_update_status(result), "module_id": module_id,
@@ -656,17 +684,17 @@ def update_seo_url(query: str, keyword: str) -> str:
 
     # Check if mapping exists
     existing = db.run_query(
-        f"SELECT seo_url_id FROM oc_seo_url WHERE query = '{safe_query}' AND store_id = 0 AND language_id = 1"
+        f"SELECT seo_url_id FROM oc_seo_url WHERE query = '{safe_query}' AND store_id = 0 AND language_id = {lang_id()}"
     )
 
     if existing:
         result = db.run_query(
-            f"UPDATE oc_seo_url SET keyword = '{safe_keyword}' WHERE query = '{safe_query}' AND store_id = 0 AND language_id = 1"
+            f"UPDATE oc_seo_url SET keyword = '{safe_keyword}' WHERE query = '{safe_query}' AND store_id = 0 AND language_id = {lang_id()}"
         )
         return json.dumps({**_update_status(result), "query": query, "keyword": keyword, "result": result})
     else:
         result = db.run_query(
-            f"INSERT INTO oc_seo_url (store_id, language_id, query, keyword) VALUES (0, 1, '{safe_query}', '{safe_keyword}')"
+            f"INSERT INTO oc_seo_url (store_id, language_id, query, keyword) VALUES (0, {lang_id()}, '{safe_query}', '{safe_keyword}')"
         )
         return json.dumps({"created": True, "query": query, "keyword": keyword, "result": result})
 
@@ -676,16 +704,21 @@ def update_category(
     category_id: int,
     name: str | None = None,
     meta_title: str | None = None,
+    meta_h1: str | None = None,
     meta_description: str | None = None,
     status: int | None = None,
+    noindex: int | None = None,
 ) -> str:
-    """Update category fields. Only specified fields are changed."""
+    """Update category fields. Only specified fields are changed.
+    LiveStore extras: meta_h1, noindex."""
 
     updates_cat = []
     updates_desc = []
 
     if status is not None:
         updates_cat.append(f"status = {int(status)}")
+    if noindex is not None:
+        updates_cat.append(f"noindex = {int(noindex)}")
 
     if name is not None:
         safe = esc(name)
@@ -693,6 +726,9 @@ def update_category(
     if meta_title is not None:
         safe = esc(meta_title)
         updates_desc.append(f"meta_title = '{safe}'")
+    if meta_h1 is not None:
+        safe = esc(meta_h1)
+        updates_desc.append(f"meta_h1 = '{safe}'")
     if meta_description is not None:
         safe = esc(meta_description)
         updates_desc.append(f"meta_description = '{safe}'")
@@ -707,7 +743,7 @@ def update_category(
         results.append({"table": "oc_category", "result": r})
 
     if updates_desc:
-        sql = f"UPDATE oc_category_description SET {', '.join(updates_desc)} WHERE category_id = {int(category_id)} AND language_id = 1"
+        sql = f"UPDATE oc_category_description SET {', '.join(updates_desc)} WHERE category_id = {int(category_id)} AND language_id = {lang_id()}"
         r = db.run_query(sql)
         results.append({"table": "oc_category_description", "result": r})
 
@@ -718,7 +754,11 @@ def update_category(
 @mcp.tool()
 def write_file(path: str, content: str) -> str:
     """Write content to a file on the VPS via SFTP. Path is relative to OpenCart root unless absolute.
-    Creates parent directories if needed. Use with caution."""
+    Creates parent directories if needed. Requires SSH or DDEV."""
+
+    blocked = _shell_error()
+    if blocked:
+        return blocked
 
     if not path.startswith("/"):
         full_path = f"{config.oc_root}/{path}"
@@ -738,7 +778,11 @@ def write_file(path: str, content: str) -> str:
 
 @mcp.tool()
 def clear_cache() -> str:
-    """Clear OpenCart and Journal3 caches on VPS."""
+    """Clear OpenCart cache on the server. Requires SSH or DDEV."""
+
+    blocked = _shell_error()
+    if blocked:
+        return blocked
 
     if not config.storage_dir.rstrip("/"):
         return json.dumps({"error": "OPENCART_STORAGE not configured — refusing to rm -rf"})
@@ -773,6 +817,13 @@ def refresh_modifications() -> str:
     rows = db.run_query("SELECT COUNT(*) AS n FROM oc_modification WHERE status = 1")
     active = int(rows[0]["n"]) if rows else 0
 
+    blocked = _shell_error()
+    if blocked:
+        payload = json.loads(blocked)
+        payload["active_modifications"] = active
+        payload["note"] = "Refresh OCMOD in Admin > Extensions > Modifications instead."
+        return json.dumps(payload)
+
     mod_dir = shlex.quote(f"{config.storage_dir.rstrip('/')}/modification")
     out = db.run_command(f"rm -rf {mod_dir}/* 2>&1 && echo __cleared__")
     if "__cleared__" not in out:
@@ -792,18 +843,18 @@ def get_information_pages(search: str = "") -> str:
     """List CMS/information pages (About Us, FAQ, T&Cs, etc.) with title and content preview.
     Search by title text."""
 
-    where = "WHERE id.language_id = 1"
+    where = "WHERE 1=1"
     if search:
         safe = esc(search)
         where += f" AND id.title LIKE '%{safe}%'"
 
     sql = f"""
-        SELECT i.information_id, id.title, i.status, i.sort_order,
+        SELECT i.information_id, id.title, i.status, i.sort_order, i.noindex,
                SUBSTRING(id.description, 1, 300) AS description_preview,
-               su.keyword AS seo_url
+               su.keyword AS seo_url, id.meta_h1
         FROM oc_information i
-        JOIN oc_information_description id ON i.information_id = id.information_id AND id.language_id = 1
-        LEFT JOIN oc_seo_url su ON su.query = CONCAT('information_id=', i.information_id) AND su.language_id = 1
+        JOIN oc_information_description id ON i.information_id = id.information_id AND id.language_id = {lang_id()}
+        LEFT JOIN oc_seo_url su ON su.query = CONCAT('information_id=', i.information_id) AND su.language_id = {lang_id()}
         {where}
         ORDER BY i.sort_order, id.title
     """
@@ -816,12 +867,12 @@ def get_information_page(information_id: int) -> str:
     """Get full content of a single information/CMS page by ID."""
 
     sql = f"""
-        SELECT i.information_id, id.title, id.description, id.meta_title,
-               id.meta_description, id.meta_keyword, i.status, i.sort_order,
+        SELECT i.information_id, id.title, id.description, id.meta_title, id.meta_h1,
+               id.meta_description, id.meta_keyword, i.status, i.sort_order, i.noindex,
                su.keyword AS seo_url
         FROM oc_information i
-        JOIN oc_information_description id ON i.information_id = id.information_id AND id.language_id = 1
-        LEFT JOIN oc_seo_url su ON su.query = 'information_id={int(information_id)}' AND su.language_id = 1
+        JOIN oc_information_description id ON i.information_id = id.information_id AND id.language_id = {lang_id()}
+        LEFT JOIN oc_seo_url su ON su.query = 'information_id={int(information_id)}' AND su.language_id = {lang_id()}
         WHERE i.information_id = {int(information_id)}
     """
     rows = db.run_query(sql)
@@ -836,7 +887,7 @@ def update_information(information_id: int, find: str, replace: str) -> str:
     Works on the HTML description field. Use get_information_page first to see current content."""
 
     rows = db.run_query(
-        f"SELECT description FROM oc_information_description WHERE information_id = {int(information_id)} AND language_id = 1"
+        f"SELECT description FROM oc_information_description WHERE information_id = {int(information_id)} AND language_id = {lang_id()}"
     )
     if not rows:
         return json.dumps({"error": f"Information page {information_id} not found"})
@@ -852,7 +903,7 @@ def update_information(information_id: int, find: str, replace: str) -> str:
     safe_updated = esc(updated)
     result = db.run_query(
         f"UPDATE oc_information_description SET description = '{safe_updated}' "
-        f"WHERE information_id = {int(information_id)} AND language_id = 1"
+        f"WHERE information_id = {int(information_id)} AND language_id = {lang_id()}"
     )
     return json.dumps({
         **_update_status(result), "information_id": information_id,
@@ -867,7 +918,7 @@ def update_information(information_id: int, find: str, replace: str) -> str:
 def get_seo_urls(query_pattern: str = "") -> str:
     """Get SEO URL mappings. Filter by query pattern (e.g. 'product_id=%')."""
 
-    where = "WHERE store_id = 0 AND language_id = 1"
+    where = f"WHERE store_id = 0 AND language_id = {lang_id()}"
     if query_pattern:
         safe = esc(query_pattern)
         where += f" AND query LIKE '{safe}'"
@@ -891,8 +942,8 @@ def get_stock_report(limit: int = 200) -> str:
         SELECT p.product_id, pd.name, p.model, p.sku, p.quantity, p.price,
                ss.name AS stock_status
         FROM oc_product p
-        JOIN oc_product_description pd ON p.product_id = pd.product_id AND pd.language_id = 1
-        LEFT JOIN oc_stock_status ss ON p.stock_status_id = ss.stock_status_id AND ss.language_id = 1
+        JOIN oc_product_description pd ON p.product_id = pd.product_id AND pd.language_id = {lang_id()}
+        LEFT JOIN oc_stock_status ss ON p.stock_status_id = ss.stock_status_id AND ss.language_id = {lang_id()}
         WHERE p.status = 1
         ORDER BY p.quantity ASC
         LIMIT {int(limit)}
@@ -923,7 +974,7 @@ def update_order_status(
         return json.dumps({"error": f"Order {order_id} not found"})
 
     status_row = db.run_query(
-        f"SELECT name FROM oc_order_status WHERE order_status_id = {int(order_status_id)} AND language_id = 1"
+        f"SELECT name FROM oc_order_status WHERE order_status_id = {int(order_status_id)} AND language_id = {lang_id()}"
     )
     if not status_row:
         return json.dumps({"error": f"Unknown order_status_id {order_status_id} — see get_order_statuses"})
@@ -1072,7 +1123,7 @@ def dashboard(low_stock_threshold: int = 5) -> str:
     breakdown, stock alerts, and the latest orders. The 'give me a store
     summary' tool. Excludes cancelled/failed/refunded orders from revenue."""
 
-    excluded = "(0, 7, 8, 10, 14, 11, 12)"
+    excluded = EXCLUDED_ORDER_STATUS_IDS
 
     revenue = db.run_query(f"""
         SELECT
@@ -1088,10 +1139,10 @@ def dashboard(low_stock_threshold: int = 5) -> str:
           AND order_status_id NOT IN {excluded}
     """)
 
-    statuses = db.run_query("""
+    statuses = db.run_query(f"""
         SELECT os.name AS status, COUNT(*) AS orders
         FROM oc_order o
-        LEFT JOIN oc_order_status os ON o.order_status_id = os.order_status_id AND os.language_id = 1
+        LEFT JOIN oc_order_status os ON o.order_status_id = os.order_status_id AND os.language_id = {lang_id()}
         WHERE o.date_added >= DATE_SUB(NOW(), INTERVAL 30 DAY) AND o.order_status_id > 0
         GROUP BY os.name
         ORDER BY orders DESC
@@ -1105,20 +1156,20 @@ def dashboard(low_stock_threshold: int = 5) -> str:
         WHERE status = 1
     """)
 
-    lowest = db.run_query("""
+    lowest = db.run_query(f"""
         SELECT p.product_id, pd.name, p.quantity
         FROM oc_product p
-        JOIN oc_product_description pd ON p.product_id = pd.product_id AND pd.language_id = 1
+        JOIN oc_product_description pd ON p.product_id = pd.product_id AND pd.language_id = {lang_id()}
         WHERE p.status = 1
         ORDER BY p.quantity ASC
         LIMIT 5
     """)
 
-    latest = db.run_query("""
+    latest = db.run_query(f"""
         SELECT o.order_id, CONCAT(o.firstname, ' ', o.lastname) AS customer,
                o.total, os.name AS status, o.date_added
         FROM oc_order o
-        LEFT JOIN oc_order_status os ON o.order_status_id = os.order_status_id AND os.language_id = 1
+        LEFT JOIN oc_order_status os ON o.order_status_id = os.order_status_id AND os.language_id = {lang_id()}
         ORDER BY o.date_added DESC
         LIMIT 5
     """)
@@ -1128,6 +1179,160 @@ def dashboard(low_stock_threshold: int = 5) -> str:
         "order_status_breakdown_30d": statuses,
         "stock": {**(stock[0] if stock else {}), "lowest_5": lowest},
         "latest_orders": latest,
+    })
+
+
+# ─── TECHNICS / LIVESTORE ─────────────────────────────────────
+
+
+@mcp.tool()
+def get_technics_blog(search: str = "", limit: int = 50, include_description: bool = False) -> str:
+    """List Technics blog posts (oc_technics_blog). Search by title."""
+
+    where = f"WHERE bd.language_id = {lang_id()}"
+    if search:
+        where += f" AND bd.title LIKE '%{esc(search)}%'"
+    desc_col = ", bd.description" if include_description else ", LEFT(bd.description, 240) AS description_preview"
+    sql = f"""
+        SELECT b.blog_id, bd.title, b.status, b.viewed, b.date_added, b.image,
+               bd.meta_title, bd.meta_h1{desc_col}
+        FROM oc_technics_blog b
+        JOIN oc_technics_blog_description bd ON b.blog_id = bd.blog_id AND bd.language_id = {lang_id()}
+        {where}
+        ORDER BY b.date_added DESC, b.blog_id DESC
+        LIMIT {int(limit)}
+    """
+    return json.dumps(_optional_query(sql))
+
+
+@mcp.tool()
+def get_technics_blog_post(blog_id: int) -> str:
+    """Get a single Technics blog post with full HTML and comments."""
+
+    rows = _optional_query(f"""
+        SELECT b.*, bd.title, bd.description, bd.meta_title, bd.meta_h1,
+               bd.meta_description, bd.meta_keyword, bd.tag
+        FROM oc_technics_blog b
+        JOIN oc_technics_blog_description bd ON b.blog_id = bd.blog_id AND bd.language_id = {lang_id()}
+        WHERE b.blog_id = {int(blog_id)}
+    """)
+    if not rows:
+        return json.dumps({"error": f"Technics blog post {blog_id} not found"})
+    comments = _optional_query(f"""
+        SELECT comment_id, author, text, rating, status, date_added
+        FROM oc_technics_blog_comment
+        WHERE blog_id = {int(blog_id)}
+        ORDER BY date_added DESC
+    """)
+    result = rows[0]
+    result["comments"] = comments
+    return json.dumps(result)
+
+
+@mcp.tool()
+def get_technics_news(search: str = "", limit: int = 50) -> str:
+    """List Technics news items."""
+
+    where = f"WHERE nd.language_id = {lang_id()}"
+    if search:
+        where += f" AND nd.title LIKE '%{esc(search)}%'"
+    sql = f"""
+        SELECT n.news_id, nd.title, n.status, n.date_added, n.sort_order,
+               LEFT(nd.description, 240) AS description_preview, nd.meta_h1
+        FROM oc_technics_news n
+        JOIN oc_technics_news_description nd ON n.news_id = nd.news_id AND nd.language_id = {lang_id()}
+        {where}
+        ORDER BY n.date_added DESC, n.news_id DESC
+        LIMIT {int(limit)}
+    """
+    return json.dumps(_optional_query(sql))
+
+
+@mcp.tool()
+def get_technics_sets() -> str:
+    """List Technics product sets (kits) with titles."""
+
+    sql = f"""
+        SELECT s.set_id, sd.title, s.mode, s.discount, s.sort_order, s.status, s.date_added,
+               LEFT(sd.description, 240) AS description_preview
+        FROM oc_technics_set s
+        JOIN oc_technics_set_description sd ON s.set_id = sd.set_id AND sd.language_id = {lang_id()}
+        ORDER BY s.sort_order, s.set_id
+    """
+    return json.dumps(_optional_query(sql))
+
+
+@mcp.tool()
+def get_callbacks(limit: int = 50) -> str:
+    """List Technics callback requests (oc_callback)."""
+
+    sql = f"""
+        SELECT call_id, name, telephone, date_added, date_modified, status_id, store_id,
+               LEFT(comment, 240) AS comment_preview
+        FROM oc_callback
+        ORDER BY date_added DESC
+        LIMIT {int(limit)}
+    """
+    return json.dumps(_optional_query(sql))
+
+
+@mcp.tool()
+def get_articles(search: str = "", limit: int = 50, include_description: bool = False) -> str:
+    """List LiveStore built-in blog articles (oc_article), not Technics blog."""
+
+    where = f"WHERE ad.language_id = {lang_id()}"
+    if search:
+        where += f" AND ad.name LIKE '%{esc(search)}%'"
+    desc_col = ", ad.description" if include_description else ", LEFT(ad.description, 240) AS description_preview"
+    sql = f"""
+        SELECT a.article_id, ad.name, a.status, a.noindex, a.date_added, a.date_modified,
+               a.viewed, a.image, ad.meta_title, ad.meta_h1{desc_col}
+        FROM oc_article a
+        JOIN oc_article_description ad ON a.article_id = ad.article_id AND ad.language_id = {lang_id()}
+        {where}
+        ORDER BY a.date_added DESC
+        LIMIT {int(limit)}
+    """
+    return json.dumps(_optional_query(sql))
+
+
+@mcp.tool()
+def get_article(article_id: int) -> str:
+    """Get a single LiveStore article with full HTML."""
+
+    rows = _optional_query(f"""
+        SELECT a.*, ad.name, ad.description, ad.meta_title, ad.meta_h1,
+               ad.meta_description, ad.meta_keyword, ad.tag
+        FROM oc_article a
+        JOIN oc_article_description ad ON a.article_id = ad.article_id AND ad.language_id = {lang_id()}
+        WHERE a.article_id = {int(article_id)}
+    """)
+    if not rows:
+        return json.dumps({"error": f"Article {article_id} not found"})
+    return json.dumps(rows[0])
+
+
+@mcp.tool()
+def update_article(article_id: int, find: str, replace: str) -> str:
+    """Find/replace text in a LiveStore article HTML description."""
+
+    rows = _optional_query(
+        f"SELECT description FROM oc_article_description "
+        f"WHERE article_id = {int(article_id)} AND language_id = {lang_id()}"
+    )
+    if not rows:
+        return json.dumps({"error": f"Article {article_id} not found"})
+    current = rows[0]["description"]
+    if find not in current:
+        return json.dumps({"error": f"Text not found in article {article_id}"})
+    count = current.count(find)
+    result = db.run_query(
+        f"UPDATE oc_article_description SET description = '{esc(current.replace(find, replace))}' "
+        f"WHERE article_id = {int(article_id)} AND language_id = {lang_id()}"
+    )
+    return json.dumps({
+        **_update_status(result), "article_id": article_id,
+        "replacements": count, "result": result,
     })
 
 

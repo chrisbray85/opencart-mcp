@@ -1,19 +1,21 @@
-# OpenCart MCP Server
+# LiveStore MCP Server
 
-Query and edit your OpenCart store from Claude Code. Products, orders, customers, Journal3 modules, SEO URLs, CMS pages — 42 tools, all through natural language.
+Fork of [chrisbray85/opencart-mcp](https://github.com/chrisbray85/opencart-mcp) for **LiveStore 3.x** (ocStore / OpenCart 3) with the **Technics** theme.
+
+Query and edit your store from Claude Code or any MCP client. Products, orders, customers, Technics modules, SEO URLs, CMS pages, LiveStore blog — 49 tools, all through natural language.
 
 Built for store owners and developers who are tired of SSH + phpMyAdmin + admin panel clicking to get simple answers.
 
 ```
 "Which products are low on stock?"
-"Update the meta description for category 25"
-"Show me today's orders over £50"
-"Find the Journal3 module that contains our FAQ text and fix the typo"
+"Update the meta H1 for category 25"
+"Show me today's orders over 5000 RUB"
+"Find the Technics slider module and fix the typo"
 ```
 
 It just works. You ask, Claude calls the right tool, you get the answer.
 
-> 💻 **Prefer the terminal?** Check out [**opencart-cli**](https://github.com/chrisbray85/opencart-cli) — same OpenCart understanding, pretty tables, sparklines, AI in the shell (`opencart ask "..."`), interactive REPL, live order watching. `pip install opencart-cli`.
+> Prefer the terminal? Check out [**opencart-cli**](https://github.com/chrisbray85/opencart-cli) — same OpenCart understanding, pretty tables, sparklines, AI in the shell (`opencart ask "..."`), interactive REPL, live order watching. `pip install opencart-cli`.
 
 ---
 
@@ -23,10 +25,12 @@ This matters if you're connecting AI to a live store. Every decision here was ma
 
 - **Read-only queries** — `query()` only allows SELECT, SHOW, DESCRIBE, EXPLAIN
 - **DDL is blocked** — DROP, ALTER, TRUNCATE, CREATE will never run, even through `run_sql()`
-- **SSH tunnel** — database credentials stay inside the encrypted connection, never exposed
+- **Direct MySQL or SSH** — with SSH, database credentials stay inside the encrypted connection. Direct MySQL is for hosts without SSH (remote MySQL or a tunnel)
+- **File tools refuse without SSH** — `get_file()`, `write_file()`, `clear_cache()`, and `refresh_modifications()` error in direct-MySQL mode instead of touching a local copy of the store
 - **Path traversal blocked** — `get_file()` and `write_file()` reject `..` in paths
 - **Write confirmation** — Claude Code prompts you before any write tool executes
-- **Nothing runs on your server** — no agents, no daemons, no PHP files uploaded. The server runs on your machine and connects over SSH
+- **License keys omitted** — Technics license settings are not returned or updated
+- **Nothing runs on your server** — no agents, no daemons, no PHP files uploaded. The server runs on your machine
 
 You can point this at a production store and not worry about it doing something stupid.
 
@@ -51,11 +55,12 @@ You can point this at a production store and not worry about it doing something 
 - `opencart_dev__get_products` vs `opencart_live__get_products` — no confusion
 - Compare stock levels, settings, or module content across environments
 
-### Journal3 users
-- List, inspect, and edit J3 modules — FAQ accordions, sliders, banners, product tabs
-- Read and update theme settings and skin settings per skin
-- **Find/replace inside module JSON** — safely change text without rewriting the entire module
-- J3 tools return empty results (not errors) if Journal3 isn't installed, so the server works with any theme
+### Technics / LiveStore
+- List, inspect, and edit Technics modules (sliders, promo, product tabs) stored as JSON in `oc_module`
+- Read and update Technics theme settings in `oc_setting` (`theme_technics*`)
+- Technics blog, news, product sets, and callback requests
+- LiveStore built-in articles (`oc_article`) plus `meta_h1` / `noindex` on products and categories
+- Layouts and layout-module assignments
 
 ---
 
@@ -64,9 +69,9 @@ You can point this at a production store and not worry about it doing something 
 | Task | Admin panel | SSH + SQL | This MCP server |
 |------|------------|-----------|----------------|
 | Check stock levels | Click through pages | Write a query, run it | "What's low on stock?" |
-| Update a product price | Find product, edit, save | UPDATE query by hand | "Set product 47 to £29.99" |
-| Read a J3 module | JSON blob in the database | Copy-paste from phpMyAdmin | "Show me module 505" |
-| Edit FAQ text | Find module, decode JSON, edit, re-encode | Pain | "Replace X with Y in module 505" |
+| Update a product price | Find product, edit, save | UPDATE query by hand | "Set product 47 to 29.99" |
+| Read a Technics module | JSON blob in the database | Copy-paste from phpMyAdmin | "Show me module 12" |
+| Edit slider text | Find module, decode JSON, edit, re-encode | Pain | "Replace X with Y in module 12" |
 | Sales report | Reports page, manually filter | Write aggregation queries | "Sales summary for the last 7 days" |
 | Check SEO URLs | Admin > Marketing > SEO URL, paginate | SELECT from oc_seo_url | "Show SEO URLs containing 'headphones'" |
 | Manage CMS pages | Admin > Catalog > Information | Direct DB access | "Show me the About Us page" |
@@ -78,8 +83,8 @@ You can point this at a production store and not worry about it doing something 
 ### 1. Install
 
 ```bash
-git clone https://github.com/chrisbray85/opencart-mcp.git
-cd opencart-mcp
+git clone https://github.com/Penikov/livestore-mcp.git
+cd livestore-mcp
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e .
 ```
@@ -90,7 +95,7 @@ pip install -e .
 Run it directly, no clone:
 
 ```bash
-nix run github:chrisbray85/opencart-mcp
+nix run github:Penikov/livestore-mcp
 ```
 
 Install via a flake input (NixOS / home-manager) — adds the `opencart-mcp`
@@ -98,7 +103,7 @@ binary to `PATH`:
 
 ```nix
 {
-  inputs.opencart-mcp.url = "github:chrisbray85/opencart-mcp";
+  inputs.opencart-mcp.url = "github:Penikov/livestore-mcp";
 
   # then, in your NixOS configuration (configuration.nix / a module):
   environment.systemPackages = [
@@ -126,7 +131,21 @@ nix develop
 cp .env.example .env
 ```
 
-Fill in your server details:
+**Direct MySQL** (no SSH — host must allow remote connections, or use a tunnel):
+
+```env
+OPENCART_SSH_HOST=
+OPENCART_DB_HOST=your-mysql-host
+OPENCART_DB_PORT=3306
+OPENCART_DB_USER=your_db_user
+OPENCART_DB_PASS=your_db_password
+OPENCART_DB_NAME=your_opencart_database
+OPENCART_DB_PREFIX=oc_
+OPENCART_ROOT=/path/to/opencart
+OPENCART_STORAGE=/path/to/storage
+```
+
+**SSH** (preferred when available):
 
 ```env
 OPENCART_SSH_HOST=your-server-ip
@@ -149,9 +168,10 @@ Optional extras:
 OPENCART_SSH_PORT=22           # if SSH runs on a non-standard port
 OPENCART_DB_HOST=localhost     # if MySQL isn't on the same host (e.g. a tunnel)
 OPENCART_DB_PREFIX=oc_         # table prefix override
+OPENCART_LANGUAGE_ID=1         # skip auto-detect from config_language
 ```
 
-Any `OPENCART_DB_*` value you leave unset is read from the install's `config.php` automatically, so on most setups the main block above is all you need.
+Any `OPENCART_DB_*` value you leave unset is read from the install's `config.php` automatically **when SSH or DDEV is used**. Direct MySQL mode requires `OPENCART_DB_HOST`, user, password, and name in the environment.
 
 #### Using DDEV for local development?
 
@@ -196,18 +216,17 @@ Open your VS Code settings JSON (`Cmd+Shift+P` → "Open User Settings (JSON)") 
 ```json
 {
   "claude.mcpServers": {
-    "opencart": {
-      "command": "/absolute/path/to/opencart-mcp/.venv/bin/python",
+    "livestore": {
+      "command": "/absolute/path/to/livestore-mcp/.venv/bin/python",
       "args": ["-m", "opencart_mcp.server"],
-      "cwd": "/absolute/path/to/opencart-mcp",
+      "cwd": "/absolute/path/to/livestore-mcp",
       "env": {
-        "PYTHONPATH": "/absolute/path/to/opencart-mcp/src",
-        "OPENCART_SSH_HOST": "your-server-ip",
-        "OPENCART_SSH_USER": "your-ssh-username",
-        "OPENCART_SSH_KEY": "~/.ssh/id_ed25519",
+        "PYTHONPATH": "/absolute/path/to/livestore-mcp/src",
+        "OPENCART_DB_HOST": "your-mysql-host",
         "OPENCART_DB_USER": "your_db_user",
         "OPENCART_DB_PASS": "your_db_password",
         "OPENCART_DB_NAME": "your_opencart_database",
+        "OPENCART_DB_PREFIX": "oc_",
         "OPENCART_ROOT": "/path/to/opencart",
         "OPENCART_STORAGE": "/path/to/storage"
       }
@@ -228,18 +247,17 @@ Add to `~/.claude.json` (global) or `.claude/settings.json` (project-level):
 ```json
 {
   "mcpServers": {
-    "opencart": {
-      "command": "/absolute/path/to/opencart-mcp/.venv/bin/python",
+    "livestore": {
+      "command": "/absolute/path/to/livestore-mcp/.venv/bin/python",
       "args": ["-m", "opencart_mcp.server"],
-      "cwd": "/absolute/path/to/opencart-mcp",
+      "cwd": "/absolute/path/to/livestore-mcp",
       "env": {
-        "PYTHONPATH": "/absolute/path/to/opencart-mcp/src",
-        "OPENCART_SSH_HOST": "your-server-ip",
-        "OPENCART_SSH_USER": "your-ssh-username",
-        "OPENCART_SSH_KEY": "~/.ssh/id_ed25519",
+        "PYTHONPATH": "/absolute/path/to/livestore-mcp/src",
+        "OPENCART_DB_HOST": "your-mysql-host",
         "OPENCART_DB_USER": "your_db_user",
         "OPENCART_DB_PASS": "your_db_password",
         "OPENCART_DB_NAME": "your_opencart_database",
+        "OPENCART_DB_PREFIX": "oc_",
         "OPENCART_ROOT": "/path/to/opencart",
         "OPENCART_STORAGE": "/path/to/storage"
       }
@@ -289,42 +307,43 @@ These all work out of the box. Just type them into Claude Code.
 "Replace 'old company name' with 'new company name' in the About Us page"
 ```
 
-**Journal3 theme**
+**Technics theme**
 ```
-"List all Journal3 FAQ modules"
-"Show me the full content of module 505"
-"Replace 'Free shipping over £50' with 'Free shipping over £75' in the banner module"
-"What skin settings are configured for skin 1?"
+"List Technics modules whose code contains slider"
+"Show me the full JSON for module 12"
+"Replace 'Free shipping' with 'Free shipping over 5000' in that module"
+"What theme_technics settings contain 'header'?"
+"List Technics blog posts and LiveStore articles"
 ```
 
 **Technical**
 ```
 "Show the schema for oc_order_product"
-"List all tables matching 'journal3'"
+"List all tables matching 'technics'"
 "Run: SELECT order_id, total FROM oc_order WHERE total > 100 ORDER BY date_added DESC LIMIT 10"
 "What OCMOD modifications are active?"
 ```
 
 ---
 
-## All 42 tools
+## All 49 tools
 
-### Read (27)
+### Read (34)
 
 | Tool | What it does |
 |------|-------------|
-| `get_products` | Search products with stock, prices, SEO data. Filter by category |
+| `get_products` | Search products with stock, prices, SEO, `meta_h1`, `noindex` |
 | `get_product` | Full product details — images, options, categories, attributes |
 | `get_orders` | Recent orders filtered by status and date range |
 | `get_order` | Full order with line items, totals, status history |
 | `get_customers` | Search by name/email with order count and total spent |
-| `get_categories` | Category tree with product counts and SEO URLs |
+| `get_categories` | Category tree with product counts, SEO URLs, `meta_h1` |
 | `get_stock_report` | All products sorted by stock level (lowest first) |
 | `get_settings` | OpenCart core settings by group/key |
-| `get_j3_settings` | Journal3 theme settings |
-| `get_j3_skin_settings` | Journal3 skin/layout settings per skin |
-| `get_modules` | Journal3 modules by type — search content within modules |
-| `get_j3_module` | Full module JSON data for any J3 module |
+| `get_theme_settings` | Technics settings from `oc_setting` (`theme_technics*`) |
+| `get_modules` | `oc_module` rows by code/name — search JSON setting |
+| `get_module` | Full module JSON for any `oc_module` id |
+| `get_layouts` | Layouts, routes, and assigned modules |
 | `get_information_pages` | List CMS pages (About Us, FAQ, T&Cs) with content preview |
 | `get_information_page` | Full HTML content of a single CMS/information page |
 | `get_order_statuses` | All order status mappings with IDs |
@@ -336,51 +355,71 @@ These all work out of the box. Just type them into Claude Code.
 | `query` | Custom read-only SQL (SELECT/SHOW/DESCRIBE/EXPLAIN only) |
 | `get_table_schema` | Column definitions for any table |
 | `list_tables` | List tables matching a pattern |
-| `get_file` | Read files from the server (path traversal blocked) |
+| `get_file` | Read files from the server (SSH/DDEV required) |
 | `get_coupons` | List discount coupons with usage counts |
 | `get_vouchers` | List gift vouchers |
 | `dashboard` | One-call store overview — revenue, order statuses, stock alerts, latest orders |
+| `get_technics_blog` | Technics blog posts |
+| `get_technics_blog_post` | Single Technics blog post plus comments |
+| `get_technics_news` | Technics news items |
+| `get_technics_sets` | Technics product sets/kits |
+| `get_callbacks` | Technics callback requests |
+| `get_articles` | LiveStore built-in blog (`oc_article`) |
+| `get_article` | Single LiveStore article |
 
 ### Write (15)
 
 | Tool | What it does |
 |------|-------------|
-| `update_product` | Update price, stock, name, SEO title, meta description |
+| `update_product` | Update price, stock, name, SEO title, `meta_h1`, `noindex` |
 | `update_setting` | Change OpenCart core settings |
-| `update_j3_setting` | Change Journal3 theme settings |
-| `update_j3_skin_setting` | Change Journal3 skin settings |
-| `update_j3_module` | Find/replace text within J3 module JSON (banners, FAQ, sliders) |
+| `update_theme_setting` | Change Technics `oc_setting` keys |
+| `update_module` | Find/replace text within `oc_module` JSON |
 | `update_information` | Find/replace text within CMS page HTML (About Us, T&Cs, etc.) |
 | `update_seo_url` | Create or update SEO URL mappings |
-| `update_category` | Update category name, meta, status |
-| `write_file` | Write files to server via SFTP |
+| `update_category` | Update category name, meta, `meta_h1`, status, `noindex` |
+| `write_file` | Write files to server via SFTP (SSH/DDEV required) |
 | `run_sql` | Execute INSERT/UPDATE/DELETE (DDL blocked) |
-| `clear_cache` | Flush OpenCart + Journal3 caches |
-| `refresh_modifications` | Clear OCMOD modification cache |
+| `clear_cache` | Flush OpenCart cache (SSH/DDEV required) |
+| `refresh_modifications` | Clear OCMOD modification cache (SSH/DDEV required) |
 | `update_order_status` | Change order status + append order history |
 | `create_coupon` | Create a discount coupon (percentage or fixed) |
 | `update_coupon` | Enable/disable, extend, or edit a coupon |
+| `update_article` | Find/replace text in a LiveStore article |
 
 ---
 
 ## How it works
 
+**Direct MySQL** (leave `OPENCART_SSH_HOST` empty):
+
 ```
-Your machine                          Your server
+Your machine                          MySQL host
 ┌──────────────┐                     ┌──────────────┐
-│ Claude Code  │                     │              │
-│      ↓       │     SSH tunnel      │   PHP cli    │
-│  MCP Server  │ ──────────────────→ │      ↓       │
-│  (Python)    │   PHP via stdin     │   MySQL      │
-│              │ ←────────────────── │   (JSON)     │
+│ MCP client   │     pymysql         │              │
+│      ↓       │ ──────────────────→ │   MySQL      │
+│  MCP Server  │                     │              │
+│  (Python)    │ ←────────────────── │   (rows)     │
 └──────────────┘                     └──────────────┘
 ```
 
-The server runs **on your machine**. It connects to your OpenCart server via SSH, pipes PHP to the remote interpreter via stdin, and gets JSON back. Nothing is installed on your server. No files uploaded, no cleanup, no ports opened.
+**SSH** (set `OPENCART_SSH_HOST`):
 
+```
+Your machine                          Your server
+┌──────────────┐                     ┌──────────────┐
+│ MCP client   │     SSH tunnel      │              │
+│      ↓       │ ──────────────────→ │   PHP cli    │
+│  MCP Server  │   PHP via stdin     │      ↓       │
+│  (Python)    │ ←────────────────── │   MySQL      │
+└──────────────┘                     └──────────────┘
+```
+
+The server runs **on your machine**. Nothing is installed on your store. No files uploaded, no cleanup, no extra ports opened for the MCP itself.
+
+- **Direct MySQL** — `pymysql`, for hosts without SSH
 - **PHP via stdin** — works with any PHP version, nothing written to disk
-- **SSH tunnel** — credentials never leave the encrypted connection
-- **Paramiko** — pure Python SSH, no system dependencies beyond Python 3.10+
+- **Paramiko** — pure Python SSH when SSH is configured
 
 ---
 
@@ -392,16 +431,16 @@ Run dev and live as separate instances in the same Claude session:
 {
   "mcpServers": {
     "opencart_dev": {
-      "command": "/path/to/opencart-mcp/.venv/bin/python",
+      "command": "/path/to/livestore-mcp/.venv/bin/python",
       "args": ["-m", "opencart_mcp.server"],
-      "cwd": "/path/to/opencart-mcp",
-      "env": { "OPENCART_DB_NAME": "my_dev_database", "..." }
+      "cwd": "/path/to/livestore-mcp",
+      "env": { "OPENCART_DB_NAME": "my_dev_database" }
     },
     "opencart_live": {
-      "command": "/path/to/opencart-mcp/.venv/bin/python",
+      "command": "/path/to/livestore-mcp/.venv/bin/python",
       "args": ["-m", "opencart_mcp.server"],
-      "cwd": "/path/to/opencart-mcp",
-      "env": { "OPENCART_DB_NAME": "my_live_database", "..." }
+      "cwd": "/path/to/livestore-mcp",
+      "env": { "OPENCART_DB_NAME": "my_live_database" }
     }
   }
 }
@@ -415,18 +454,22 @@ Claude prefixes tools automatically — `opencart_dev__get_products` vs `opencar
 
 | Component | Versions |
 |-----------|----------|
-| OpenCart | 3.0.3.2 — 3.0.5.0 (any 3.x should work) |
-| PHP | 5.6+ (server-side) |
+| LiveStore / ocStore | 3.0.4.4 (OpenCart 3.x) |
+| Technics | 1.4.x |
+| PHP | 5.6+ (server-side, SSH mode only) |
 | Python | 3.10+ (local machine) |
-| Journal3 | 3.x (optional — everything works without it) |
-| Hosting | VPS, dedicated servers, shared hosting with SSH |
-| Clients | Claude Code CLI, VS Code extension, JetBrains extension |
-
-Used daily on production stores with 100+ products, thousands of orders, and Journal3 theme.
+| Hosting | VPS, dedicated servers, shared hosting with remote MySQL or SSH |
+| Clients | Claude Code CLI, VS Code extension, JetBrains extension, Cursor |
 
 ---
 
 ## Troubleshooting
+
+### Direct MySQL connection fails
+
+- Confirm the host allows your IP on port 3306 (many shared hosts only allow localhost)
+- Use an SSH tunnel and set `OPENCART_DB_HOST=127.0.0.1` plus `OPENCART_DB_PORT` to the local tunnel port
+- File/cache tools will still refuse until SSH or DDEV is configured — that is expected
 
 ### SSH connection fails
 
@@ -457,9 +500,9 @@ cPanel prints `tput: No value for $TERM` warnings over SSH. The server filters t
 
 Default timeout is 30 seconds. If queries are slow, check if SSH goes through a VPN (adds latency) or if the server is under load.
 
-### Journal3 tables not found
+### Technics tables not found
 
-Normal if you're not running Journal3. The J3 tools return empty results instead of errors.
+Technics extras (`oc_technics_blog`, `oc_callback`, …) return empty results instead of errors if those tables are missing.
 
 ### Common path issues
 
@@ -476,19 +519,27 @@ Check your `config.php` — both `DIR_APPLICATION` and `DIR_STORAGE` are defined
 ## Roadmap
 
 - [ ] OpenCart 4.x support
+- [x] LiveStore + Technics tools, direct MySQL *(v0.7.0)*
 - [x] Coupon and voucher management tools *(v0.6.0)*
 - [x] Order status update tool *(v0.6.0)*
 - [ ] Bulk product import/export
 - [ ] Customer group management
 - [x] Dashboard summary tool (one prompt, full store overview) *(v0.6.0)*
 
-Got a feature request? [Open an issue](https://github.com/chrisbray85/opencart-mcp/issues).
+Got a feature request? [Open an issue](https://github.com/Penikov/livestore-mcp/issues).
 
 ---
 
 ## Changelog
 
-See [releases](https://github.com/chrisbray85/opencart-mcp/releases) for full history.
+See [releases](https://github.com/Penikov/livestore-mcp/releases) for fork history. Upstream history: [chrisbray85/opencart-mcp](https://github.com/chrisbray85/opencart-mcp/releases).
+
+### 0.7.0
+
+- Direct MySQL transport when `OPENCART_SSH_HOST` is empty
+- Journal3 tools replaced with Technics / LiveStore tools
+- Language id resolved from `config_language`
+- LiveStore `meta_h1` / `noindex`; wider excluded order-status set for sales
 
 ---
 
@@ -496,7 +547,7 @@ See [releases](https://github.com/chrisbray85/opencart-mcp/releases) for full hi
 
 Issues and PRs welcome. If you're running this on a hosting setup or OpenCart version not listed above, let us know what works and what doesn't.
 
-Thanks to the contributors so far:
+Thanks to the upstream contributors:
 
 - [@IceDBorn](https://github.com/IceDBorn) — DDEV support and the Nix flake
 - [@ClayRabbit](https://github.com/ClayRabbit) — configurable SSH port and full `config.php` DB fallback

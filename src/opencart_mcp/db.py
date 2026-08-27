@@ -1,11 +1,22 @@
-"""SSH + PHP query executor for OpenCart MySQL, with DDEV support."""
+"""Query executor for OpenCart/LiveStore MySQL.
 
+Backends:
+- Direct MySQL (pymysql) when OPENCART_SSH_HOST is empty
+- SSH + PHP stdin when OPENCART_SSH_HOST is a hostname
+- DDEV when OPENCART_SSH_HOST=ddev
+"""
+
+from datetime import date, datetime
+from decimal import Decimal
+import base64
 import json
 import re
 import shlex
 import subprocess
 
 import paramiko
+import pymysql
+from pymysql.cursors import DictCursor
 
 from .config import Config
 
@@ -16,6 +27,10 @@ _PREFIX_RE = re.compile(r"\boc_")
 # capture every DB_* define from config.php, keyed without the "DB_" prefix
 _PHP_DB_RE = re.compile(
     r"""define\s*\(\s*['"]DB_(\w+)['"]\s*,\s*['"]((?:\\.|[^'"\\])*)['"]\s*\)"""
+)
+
+_SHELL_REQUIRED = (
+    "This operation needs SSH or DDEV. Direct MySQL mode only executes SQL."
 )
 
 
@@ -31,13 +46,29 @@ def _clean_stderr(err: str) -> str:
     ).strip()
 
 
+def mysql_cell(value):
+    """Normalize pymysql cell values so json.dumps works like PHP mysqli strings."""
+    if value is None:
+        return None
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, datetime):
+        return value.strftime("%Y-%m-%d %H:%M:%S")
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return bytes(value).decode("utf-8", errors="replace")
+    return value
+
+
 class OpenCartDB:
-    """Executes MySQL queries on VPS via SSH + PHP scripts, or via DDEV."""
+    """Executes MySQL queries via pymysql, SSH + PHP, or DDEV."""
 
     def __init__(self, config: Config):
         self.config = config
         self._client: paramiko.SSHClient | None = None
         self._use_ddev = config.is_ddev
+        self._use_mysql = config.is_direct_mysql
         self._database: dict[str, str] | None = None
 
     # ── DB config detection ───────────────────────────────────────
@@ -48,7 +79,7 @@ class OpenCartDB:
         Returns a dict keyed by the define name without the "DB_" prefix,
         e.g. self._database['PREFIX'], ['HOSTNAME'], ['USERNAME'], ['PASSWORD'],
         ['DATABASE']. Values from self.config (env) take priority; any missing
-        field is read from config.php.
+        field is read from config.php (SSH/DDEV only).
         """
         if self._database is not None:
             return self._database
@@ -59,7 +90,7 @@ class OpenCartDB:
             db_cfg["HOSTNAME"] = self.config.db_host
         if self.config.db_user:
             db_cfg["USERNAME"] = self.config.db_user
-        if self.config.db_pass:
+        if self.config.db_pass or self._use_mysql:
             db_cfg["PASSWORD"] = self.config.db_pass
         if self.config.db_name:
             db_cfg["DATABASE"] = self.config.db_name
@@ -68,6 +99,20 @@ class OpenCartDB:
 
         if not db_cfg.get("HOSTNAME") and self.config.is_ddev:
             db_cfg["HOSTNAME"] = "db"
+
+        if self._use_mysql:
+            if "PREFIX" not in db_cfg:
+                db_cfg["PREFIX"] = "oc_"
+            missing = [k for k in ("HOSTNAME", "USERNAME", "DATABASE") if k not in db_cfg]
+            if missing:
+                keys = ", ".join(f"OPENCART_DB_{k}" if k != "HOSTNAME" else "OPENCART_DB_HOST" for k in missing)
+                raise RuntimeError(
+                    f"Direct MySQL mode needs {keys} (and OPENCART_DB_PASS). "
+                    "Leave OPENCART_SSH_HOST empty and set OPENCART_DB_*."
+                )
+            db_cfg.setdefault("PASSWORD", self.config.db_pass)
+            self._database = db_cfg
+            return self._database
 
         required = ("HOSTNAME", "USERNAME", "PASSWORD", "DATABASE", "PREFIX")
         if not all(k in db_cfg for k in required):
@@ -112,45 +157,48 @@ class OpenCartDB:
         self._database = db_cfg
         return self._database
 
-        source = ""
-        out = ""
-        err: Exception | None = None
-        try:
-            if self._use_ddev and self.config.local_root:
-                source = f"{self.config.local_root}/config.php"
-                with open(source) as f:
-                    out = f.read()
-            else:
-                source = f"{self.config.oc_root}/config.php"
-                cmd_argv = ["cat", source]
-                out, _ = self._exec(" ".join(shlex.quote(a) for a in cmd_argv))
-        except Exception as e:
-            err = e
-        # fill any missing database credentials from config.php DB_* defines
-        php_config = {k: v for k, v in _PHP_DB_RE.findall(out)} if out else {}
-        for key in required:
-            if key not in self._database and key in php_config:
-                self._database[key] = php_config[key]
-        missing = [k for k in required if k not in self._database]
-        if missing:
-            hint = (
-                "set OPENCART_DB_* env vars, or ensure DDEV is running and cwd is the project root"
-                if self._use_ddev
-                else "set OPENCART_DB_* env vars, or verify OPENCART_ROOT/SSH access to config.php"
-            )
-            cause = f" (read error: {err})" if err else ""
-            keys = ", ".join(f"DB_{k}" for k in missing)
-            raise RuntimeError(
-                f"Could not detect {keys} from {source}{cause}. {hint}"
-            )
-        return self._database
-
     def _retable(self, sql: str) -> str:
         """Rewrite hardcoded 'oc_' table names to the install's actual prefix."""
         prefix = self._get_config()["PREFIX"]
         if prefix == "oc_":
             return sql
         return _PREFIX_RE.sub(prefix, sql)
+
+    def _require_shell(self) -> None:
+        if self._use_mysql:
+            raise RuntimeError(_SHELL_REQUIRED)
+
+    # ── Direct MySQL backend ──────────────────────────────────────
+
+    def _mysql_query(self, sql: str) -> list[dict] | dict:
+        cfg = self._get_config()
+        try:
+            conn = pymysql.connect(
+                host=cfg["HOSTNAME"],
+                port=self.config.db_port,
+                user=cfg["USERNAME"],
+                password=cfg.get("PASSWORD", ""),
+                database=cfg["DATABASE"],
+                charset="utf8mb4",
+                cursorclass=DictCursor,
+                connect_timeout=15,
+                read_timeout=30,
+                write_timeout=30,
+            )
+        except pymysql.Error as e:
+            raise RuntimeError(f"DB connect failed: {e}") from e
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql)
+                if cur.description is None:
+                    conn.commit()
+                    return {"affected_rows": cur.rowcount, "insert_id": conn.insert_id()}
+                rows = cur.fetchall()
+                return [{k: mysql_cell(v) for k, v in row.items()} for row in rows]
+        except pymysql.Error as e:
+            raise RuntimeError(f"Query failed: {e}") from e
+        finally:
+            conn.close()
 
     # ── DDEV backend ──────────────────────────────────────────────
 
@@ -234,11 +282,13 @@ class OpenCartDB:
     # ── Dispatch ──────────────────────────────────────────────────
 
     def _exec(self, command: str, timeout: int = 30) -> tuple[str, str]:
+        self._require_shell()
         if self._use_ddev:
             return self._ddev_exec(command, timeout)
         return self._ssh_exec(command, timeout)
 
     def _exec_php_stdin(self, php_code: str, timeout: int = 30) -> tuple[str, str]:
+        self._require_shell()
         if self._use_ddev:
             return self._ddev_exec_php_stdin(php_code, timeout)
         return self._ssh_exec_php_stdin(php_code, timeout)
@@ -248,6 +298,9 @@ class OpenCartDB:
     def run_query(self, sql: str) -> list[dict] | dict:
         """Execute SQL query and return results as list of dicts."""
         sql = self._retable(sql)
+        if self._use_mysql:
+            return self._mysql_query(sql)
+
         escaped_sql = sql.replace("\\", "\\\\").replace("'", "\\'")
         cfg = self._get_config()
 
@@ -318,8 +371,8 @@ $db->close();
 
     def write_file(self, remote_path: str, content: str):
         """Write content to a file on VPS via SFTP, or via ddev exec."""
+        self._require_shell()
         if self._use_ddev:
-            import base64
             b64 = base64.b64encode(content.encode()).decode()
             php = f"""<?php echo file_put_contents('{_php_str(remote_path)}', base64_decode('{b64}')) === false ? 'FAIL' : 'ok';"""
             out, err = self._exec_php_stdin(php)
