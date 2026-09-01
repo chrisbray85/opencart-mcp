@@ -6,7 +6,7 @@
 
 python3Packages.buildPythonPackage {
   pname = "opencart-mcp";
-  version = "0.6.0";
+  version = "0.7.0";
   __structuredAttrs = true;
 
   inherit src;
@@ -17,6 +17,7 @@ python3Packages.buildPythonPackage {
   propagatedBuildInputs = with python3Packages; [
     fastmcp
     paramiko
+    pymysql
     python-dotenv
   ];
 

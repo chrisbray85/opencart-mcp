@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "opencart-mcp"
-version = "0.6.0"
-description = "MCP server for OpenCart — query products, orders, settings, and modules via Claude Code or any MCP client. Supports remote VPS (SSH) and local DDEV development."
+version = "0.7.0"
+description = "MCP server for OpenCart — query products, orders, settings, and modules via Claude Code or any MCP client. Supports remote VPS (SSH), direct MySQL, and local DDEV development."
 requires-python = ">=3.10"
 license = "MIT"
 authors = [
@@ -27,6 +27,7 @@ classifiers = [
 dependencies = [
     "fastmcp>=2.0.0",
     "paramiko>=3.0.0",
+    "pymysql>=1.1.0",
     "python-dotenv>=1.0.0",
 ]
 

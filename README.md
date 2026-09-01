@@ -149,9 +149,28 @@ Optional extras:
 OPENCART_SSH_PORT=22           # if SSH runs on a non-standard port
 OPENCART_DB_HOST=localhost     # if MySQL isn't on the same host (e.g. a tunnel)
 OPENCART_DB_PREFIX=oc_         # table prefix override
+OPENCART_LANGUAGE_ID=1         # skip auto-detect from config_language
 ```
 
 Any `OPENCART_DB_*` value you leave unset is read from the install's `config.php` automatically, so on most setups the main block above is all you need.
+
+The storefront language is auto-detected from the store's `config_language` setting, so multi-language and non-English stores work without configuration — set `OPENCART_LANGUAGE_ID` only to force a specific one.
+
+#### No SSH? Direct MySQL mode
+
+If your host allows remote MySQL connections (or you run your own tunnel), leave `OPENCART_SSH_HOST` empty and set the `OPENCART_DB_*` values instead:
+
+```env
+OPENCART_SSH_HOST=
+OPENCART_DB_HOST=your-mysql-host
+OPENCART_DB_PORT=3306
+OPENCART_DB_USER=your_db_user
+OPENCART_DB_PASS=your_db_password
+OPENCART_DB_NAME=your_opencart_database
+OPENCART_DB_PREFIX=oc_
+```
+
+All SQL-backed tools work identically. File and cache tools (`get_file`, `write_file`, `clear_cache`, `refresh_modifications`) refuse to run in this mode — there's no shell to run them on, and they must never touch a local copy of the store thinking it's production. SSH remains the recommended transport: credentials stay inside the encrypted connection.
 
 #### Using DDEV for local development?
 
@@ -381,6 +400,7 @@ The server runs **on your machine**. It connects to your OpenCart server via SSH
 - **PHP via stdin** — works with any PHP version, nothing written to disk
 - **SSH tunnel** — credentials never leave the encrypted connection
 - **Paramiko** — pure Python SSH, no system dependencies beyond Python 3.10+
+- **Direct MySQL** — `pymysql` fallback for hosts without SSH (file/cache tools disabled)
 
 ---
 
@@ -419,7 +439,8 @@ Claude prefixes tools automatically — `opencart_dev__get_products` vs `opencar
 | PHP | 5.6+ (server-side) |
 | Python | 3.10+ (local machine) |
 | Journal3 | 3.x (optional — everything works without it) |
-| Hosting | VPS, dedicated servers, shared hosting with SSH |
+| OpenCart forks | ocStore / LiveStore 3.x (SQL-compatible; for Technics-theme tools see the [livestore-mcp](https://github.com/Penikov/livestore-mcp) fork) |
+| Hosting | VPS, dedicated servers, shared hosting with SSH or remote MySQL |
 | Clients | Claude Code CLI, VS Code extension, JetBrains extension |
 
 Used daily on production stores with 100+ products, thousands of orders, and Journal3 theme.
@@ -476,6 +497,7 @@ Check your `config.php` — both `DIR_APPLICATION` and `DIR_STORAGE` are defined
 ## Roadmap
 
 - [ ] OpenCart 4.x support
+- [x] Direct MySQL transport + language auto-detection *(v0.7.0)*
 - [x] Coupon and voucher management tools *(v0.6.0)*
 - [x] Order status update tool *(v0.6.0)*
 - [ ] Bulk product import/export
@@ -490,6 +512,13 @@ Got a feature request? [Open an issue](https://github.com/chrisbray85/opencart-m
 
 See [releases](https://github.com/chrisbray85/opencart-mcp/releases) for full history.
 
+### 0.7.0
+
+- Direct MySQL transport (pymysql) when `OPENCART_SSH_HOST` is empty — file/cache tools refuse in this mode
+- Storefront `language_id` auto-detected from `config_language` (override with `OPENCART_LANGUAGE_ID`) — fixes hardcoded `language_id = 1` on non-English stores
+- Revenue queries now also exclude canceled-reversal, chargeback, and voided orders
+- First unit tests (`tests/test_config.py`)
+
 ---
 
 ## Contributing
@@ -500,6 +529,7 @@ Thanks to the contributors so far:
 
 - [@IceDBorn](https://github.com/IceDBorn) — DDEV support and the Nix flake
 - [@ClayRabbit](https://github.com/ClayRabbit) — configurable SSH port and full `config.php` DB fallback
+- [@Penikov](https://github.com/Penikov) — direct MySQL transport and language auto-detection; maintains the [livestore-mcp](https://github.com/Penikov/livestore-mcp) fork for LiveStore + Technics stores
 
 ## License
 

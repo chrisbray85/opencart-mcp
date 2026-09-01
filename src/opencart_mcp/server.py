@@ -12,6 +12,46 @@ from .db import OpenCartDB
 config = Config.from_env()
 db = OpenCartDB(config)
 
+# Statuses excluded from revenue: missing(0), cancelled(7), denied(8),
+# canceled reversal(9), failed(10), refunded(11), reversed(12), chargeback(13),
+# expired(14), voided(16)
+EXCLUDED_ORDER_STATUS_IDS = "(0, 7, 8, 9, 10, 11, 12, 13, 14, 16)"
+
+_lang_id: int | None = None
+
+
+def lang_id() -> int:
+    """Storefront language_id: env override, else config_language, else first enabled."""
+    global _lang_id
+    if _lang_id is not None:
+        return _lang_id
+    if config.language_id:
+        _lang_id = int(config.language_id)
+        return _lang_id
+    rows = db.run_query("""
+        SELECT l.language_id
+        FROM oc_language l
+        JOIN oc_setting s ON s.`key` = 'config_language' AND s.store_id = 0 AND s.value = l.code
+        LIMIT 1
+    """)
+    if rows:
+        _lang_id = int(rows[0]["language_id"])
+        return _lang_id
+    rows = db.run_query(
+        "SELECT language_id FROM oc_language WHERE status = 1 ORDER BY language_id LIMIT 1"
+    )
+    _lang_id = int(rows[0]["language_id"]) if rows else 1
+    return _lang_id
+
+
+def _shell_error() -> str | None:
+    """JSON error for tools that need a shell, when running in direct-MySQL mode."""
+    if config.is_direct_mysql:
+        return json.dumps({
+            "error": "File and cache tools need SSH or DDEV. Direct MySQL mode only runs SQL.",
+        })
+    return None
+
 
 def esc(s: str) -> str:
     """Escape a value for interpolation into a single-quoted MySQL string.
@@ -73,8 +113,8 @@ def get_products(
                su.keyword AS seo_url,
                pd.meta_title, pd.meta_description{desc_col}
         FROM oc_product p
-        JOIN oc_product_description pd ON p.product_id = pd.product_id AND pd.language_id = 1
-        LEFT JOIN oc_seo_url su ON su.query = CONCAT('product_id=', p.product_id) AND su.language_id = 1
+        JOIN oc_product_description pd ON p.product_id = pd.product_id AND pd.language_id = {lang_id()}
+        LEFT JOIN oc_seo_url su ON su.query = CONCAT('product_id=', p.product_id) AND su.language_id = {lang_id()}
         {where}
         ORDER BY pd.name
         LIMIT {int(limit)}
@@ -91,8 +131,8 @@ def get_product(product_id: int) -> str:
         SELECT p.*, pd.name, pd.description, pd.meta_title, pd.meta_description, pd.tag,
                su.keyword AS seo_url
         FROM oc_product p
-        JOIN oc_product_description pd ON p.product_id = pd.product_id AND pd.language_id = 1
-        LEFT JOIN oc_seo_url su ON su.query = 'product_id={int(product_id)}' AND su.language_id = 1
+        JOIN oc_product_description pd ON p.product_id = pd.product_id AND pd.language_id = {lang_id()}
+        LEFT JOIN oc_seo_url su ON su.query = 'product_id={int(product_id)}' AND su.language_id = {lang_id()}
         WHERE p.product_id = {int(product_id)}
     """
     product = db.run_query(sql)
@@ -108,7 +148,7 @@ def get_product(product_id: int) -> str:
     cats = db.run_query(f"""
         SELECT cd.name, ptc.category_id
         FROM oc_product_to_category ptc
-        JOIN oc_category_description cd ON ptc.category_id = cd.category_id AND cd.language_id = 1
+        JOIN oc_category_description cd ON ptc.category_id = cd.category_id AND cd.language_id = {lang_id()}
         WHERE ptc.product_id = {int(product_id)}
     """)
 
@@ -118,8 +158,8 @@ def get_product(product_id: int) -> str:
                pov.quantity, pov.price, pov.price_prefix, pov.weight, pov.weight_prefix
         FROM oc_product_option_value pov
         JOIN oc_product_option po ON pov.product_option_id = po.product_option_id
-        JOIN oc_option_description od ON po.option_id = od.option_id AND od.language_id = 1
-        JOIN oc_option_value_description ovd ON pov.option_value_id = ovd.option_value_id AND ovd.language_id = 1
+        JOIN oc_option_description od ON po.option_id = od.option_id AND od.language_id = {lang_id()}
+        JOIN oc_option_value_description ovd ON pov.option_value_id = ovd.option_value_id AND ovd.language_id = {lang_id()}
         WHERE pov.product_id = {int(product_id)}
     """)
 
@@ -151,7 +191,7 @@ def get_orders(
                o.payment_method, o.shipping_method,
                o.shipping_city, o.shipping_postcode, o.shipping_country
         FROM oc_order o
-        LEFT JOIN oc_order_status os ON o.order_status_id = os.order_status_id AND os.language_id = 1
+        LEFT JOIN oc_order_status os ON o.order_status_id = os.order_status_id AND os.language_id = {lang_id()}
         {where}
         ORDER BY o.date_added DESC
         LIMIT {int(limit)}
@@ -167,7 +207,7 @@ def get_order(order_id: int) -> str:
     order = db.run_query(f"""
         SELECT o.*, os.name AS status_name
         FROM oc_order o
-        LEFT JOIN oc_order_status os ON o.order_status_id = os.order_status_id AND os.language_id = 1
+        LEFT JOIN oc_order_status os ON o.order_status_id = os.order_status_id AND os.language_id = {lang_id()}
         WHERE o.order_id = {int(order_id)}
     """)
     if not order:
@@ -189,7 +229,7 @@ def get_order(order_id: int) -> str:
     history = db.run_query(f"""
         SELECT oh.date_added, os.name AS status, oh.comment
         FROM oc_order_history oh
-        LEFT JOIN oc_order_status os ON oh.order_status_id = os.order_status_id AND os.language_id = 1
+        LEFT JOIN oc_order_status os ON oh.order_status_id = os.order_status_id AND os.language_id = {lang_id()}
         WHERE oh.order_id = {int(order_id)}
         ORDER BY oh.date_added DESC
     """)
@@ -232,8 +272,8 @@ def get_categories(parent_id: int = 0) -> str:
                su.keyword AS seo_url,
                (SELECT COUNT(*) FROM oc_product_to_category ptc WHERE ptc.category_id = c.category_id) AS product_count
         FROM oc_category c
-        JOIN oc_category_description cd ON c.category_id = cd.category_id AND cd.language_id = 1
-        LEFT JOIN oc_seo_url su ON su.query = CONCAT('category_id=', c.category_id) AND su.language_id = 1
+        JOIN oc_category_description cd ON c.category_id = cd.category_id AND cd.language_id = {lang_id()}
+        LEFT JOIN oc_seo_url su ON su.query = CONCAT('category_id=', c.category_id) AND su.language_id = {lang_id()}
         WHERE c.parent_id = {int(parent_id)}
         ORDER BY c.sort_order, cd.name
     """
@@ -344,10 +384,10 @@ def get_j3_module(module_id: int) -> str:
 def get_order_statuses() -> str:
     """List all order statuses with their IDs."""
 
-    sql = """
+    sql = f"""
         SELECT order_status_id, name
         FROM oc_order_status
-        WHERE language_id = 1
+        WHERE language_id = {lang_id()}
         ORDER BY order_status_id
     """
     rows = db.run_query(sql)
@@ -363,9 +403,9 @@ def get_product_attributes(product_id: int) -> str:
                agd.name AS attribute_group, pa.text AS value
         FROM oc_product_attribute pa
         JOIN oc_attribute a ON pa.attribute_id = a.attribute_id
-        JOIN oc_attribute_description ad ON a.attribute_id = ad.attribute_id AND ad.language_id = 1
-        JOIN oc_attribute_group_description agd ON a.attribute_group_id = agd.attribute_group_id AND agd.language_id = 1
-        WHERE pa.product_id = {int(product_id)} AND pa.language_id = 1
+        JOIN oc_attribute_description ad ON a.attribute_id = ad.attribute_id AND ad.language_id = {lang_id()}
+        JOIN oc_attribute_group_description agd ON a.attribute_group_id = agd.attribute_group_id AND agd.language_id = {lang_id()}
+        WHERE pa.product_id = {int(product_id)} AND pa.language_id = {lang_id()}
         ORDER BY agd.name, ad.name
     """
     rows = db.run_query(sql)
@@ -385,7 +425,7 @@ def sales_summary(days: int = 30, top_n: int = 20) -> str:
                COUNT(DISTINCT email) AS unique_customers
         FROM oc_order
         WHERE date_added >= DATE_SUB(NOW(), INTERVAL {int(days)} DAY)
-          AND order_status_id NOT IN (0, 7, 8, 10, 14, 11, 12)
+          AND order_status_id NOT IN {EXCLUDED_ORDER_STATUS_IDS}
     """)
 
     # Top products by units sold
@@ -396,9 +436,9 @@ def sales_summary(days: int = 30, top_n: int = 20) -> str:
                COUNT(DISTINCT op.order_id) AS order_count
         FROM oc_order_product op
         JOIN oc_order o ON op.order_id = o.order_id
-        JOIN oc_product_description pd ON op.product_id = pd.product_id AND pd.language_id = 1
+        JOIN oc_product_description pd ON op.product_id = pd.product_id AND pd.language_id = {lang_id()}
         WHERE o.date_added >= DATE_SUB(NOW(), INTERVAL {int(days)} DAY)
-          AND o.order_status_id NOT IN (0, 7, 8, 10, 14, 11, 12)
+          AND o.order_status_id NOT IN {EXCLUDED_ORDER_STATUS_IDS}
         GROUP BY op.product_id, pd.name
         ORDER BY units_sold DESC
         LIMIT {int(top_n)}
@@ -411,7 +451,7 @@ def sales_summary(days: int = 30, top_n: int = 20) -> str:
                ROUND(SUM(total), 2) AS revenue
         FROM oc_order
         WHERE date_added >= DATE_SUB(NOW(), INTERVAL {int(days)} DAY)
-          AND order_status_id NOT IN (0, 7, 8, 10, 14, 11, 12)
+          AND order_status_id NOT IN {EXCLUDED_ORDER_STATUS_IDS}
         GROUP BY DATE(date_added)
         ORDER BY date DESC
     """)
@@ -508,7 +548,11 @@ def list_tables(pattern: str | None = None) -> str:
 @mcp.tool()
 def get_file(path: str, max_lines: int = 200) -> str:
     """Read a file from the VPS. Path is relative to OpenCart root unless absolute.
-    Returns first max_lines lines."""
+    Returns first max_lines lines. Requires SSH or DDEV."""
+
+    blocked = _shell_error()
+    if blocked:
+        return blocked
 
     if not path.startswith("/"):
         full_path = f"{config.oc_root}/{path}"
@@ -568,7 +612,7 @@ def update_product(
         results.append({"table": "oc_product", "result": r})
 
     if updates_desc:
-        sql = f"UPDATE oc_product_description SET {', '.join(updates_desc)} WHERE product_id = {int(product_id)} AND language_id = 1"
+        sql = f"UPDATE oc_product_description SET {', '.join(updates_desc)} WHERE product_id = {int(product_id)} AND language_id = {lang_id()}"
         r = db.run_query(sql)
         results.append({"table": "oc_product_description", "result": r})
 
@@ -656,17 +700,17 @@ def update_seo_url(query: str, keyword: str) -> str:
 
     # Check if mapping exists
     existing = db.run_query(
-        f"SELECT seo_url_id FROM oc_seo_url WHERE query = '{safe_query}' AND store_id = 0 AND language_id = 1"
+        f"SELECT seo_url_id FROM oc_seo_url WHERE query = '{safe_query}' AND store_id = 0 AND language_id = {lang_id()}"
     )
 
     if existing:
         result = db.run_query(
-            f"UPDATE oc_seo_url SET keyword = '{safe_keyword}' WHERE query = '{safe_query}' AND store_id = 0 AND language_id = 1"
+            f"UPDATE oc_seo_url SET keyword = '{safe_keyword}' WHERE query = '{safe_query}' AND store_id = 0 AND language_id = {lang_id()}"
         )
         return json.dumps({**_update_status(result), "query": query, "keyword": keyword, "result": result})
     else:
         result = db.run_query(
-            f"INSERT INTO oc_seo_url (store_id, language_id, query, keyword) VALUES (0, 1, '{safe_query}', '{safe_keyword}')"
+            f"INSERT INTO oc_seo_url (store_id, language_id, query, keyword) VALUES (0, {lang_id()}, '{safe_query}', '{safe_keyword}')"
         )
         return json.dumps({"created": True, "query": query, "keyword": keyword, "result": result})
 
@@ -707,7 +751,7 @@ def update_category(
         results.append({"table": "oc_category", "result": r})
 
     if updates_desc:
-        sql = f"UPDATE oc_category_description SET {', '.join(updates_desc)} WHERE category_id = {int(category_id)} AND language_id = 1"
+        sql = f"UPDATE oc_category_description SET {', '.join(updates_desc)} WHERE category_id = {int(category_id)} AND language_id = {lang_id()}"
         r = db.run_query(sql)
         results.append({"table": "oc_category_description", "result": r})
 
@@ -718,7 +762,11 @@ def update_category(
 @mcp.tool()
 def write_file(path: str, content: str) -> str:
     """Write content to a file on the VPS via SFTP. Path is relative to OpenCart root unless absolute.
-    Creates parent directories if needed. Use with caution."""
+    Creates parent directories if needed. Use with caution. Requires SSH or DDEV."""
+
+    blocked = _shell_error()
+    if blocked:
+        return blocked
 
     if not path.startswith("/"):
         full_path = f"{config.oc_root}/{path}"
@@ -738,7 +786,11 @@ def write_file(path: str, content: str) -> str:
 
 @mcp.tool()
 def clear_cache() -> str:
-    """Clear OpenCart and Journal3 caches on VPS."""
+    """Clear OpenCart and Journal3 caches on VPS. Requires SSH or DDEV."""
+
+    blocked = _shell_error()
+    if blocked:
+        return blocked
 
     if not config.storage_dir.rstrip("/"):
         return json.dumps({"error": "OPENCART_STORAGE not configured — refusing to rm -rf"})
@@ -773,6 +825,13 @@ def refresh_modifications() -> str:
     rows = db.run_query("SELECT COUNT(*) AS n FROM oc_modification WHERE status = 1")
     active = int(rows[0]["n"]) if rows else 0
 
+    blocked = _shell_error()
+    if blocked:
+        payload = json.loads(blocked)
+        payload["active_modifications"] = active
+        payload["note"] = "Refresh OCMOD in Admin > Extensions > Modifications instead."
+        return json.dumps(payload)
+
     mod_dir = shlex.quote(f"{config.storage_dir.rstrip('/')}/modification")
     out = db.run_command(f"rm -rf {mod_dir}/* 2>&1 && echo __cleared__")
     if "__cleared__" not in out:
@@ -792,7 +851,7 @@ def get_information_pages(search: str = "") -> str:
     """List CMS/information pages (About Us, FAQ, T&Cs, etc.) with title and content preview.
     Search by title text."""
 
-    where = "WHERE id.language_id = 1"
+    where = f"WHERE id.language_id = {lang_id()}"
     if search:
         safe = esc(search)
         where += f" AND id.title LIKE '%{safe}%'"
@@ -802,8 +861,8 @@ def get_information_pages(search: str = "") -> str:
                SUBSTRING(id.description, 1, 300) AS description_preview,
                su.keyword AS seo_url
         FROM oc_information i
-        JOIN oc_information_description id ON i.information_id = id.information_id AND id.language_id = 1
-        LEFT JOIN oc_seo_url su ON su.query = CONCAT('information_id=', i.information_id) AND su.language_id = 1
+        JOIN oc_information_description id ON i.information_id = id.information_id AND id.language_id = {lang_id()}
+        LEFT JOIN oc_seo_url su ON su.query = CONCAT('information_id=', i.information_id) AND su.language_id = {lang_id()}
         {where}
         ORDER BY i.sort_order, id.title
     """
@@ -820,8 +879,8 @@ def get_information_page(information_id: int) -> str:
                id.meta_description, id.meta_keyword, i.status, i.sort_order,
                su.keyword AS seo_url
         FROM oc_information i
-        JOIN oc_information_description id ON i.information_id = id.information_id AND id.language_id = 1
-        LEFT JOIN oc_seo_url su ON su.query = 'information_id={int(information_id)}' AND su.language_id = 1
+        JOIN oc_information_description id ON i.information_id = id.information_id AND id.language_id = {lang_id()}
+        LEFT JOIN oc_seo_url su ON su.query = 'information_id={int(information_id)}' AND su.language_id = {lang_id()}
         WHERE i.information_id = {int(information_id)}
     """
     rows = db.run_query(sql)
@@ -836,7 +895,7 @@ def update_information(information_id: int, find: str, replace: str) -> str:
     Works on the HTML description field. Use get_information_page first to see current content."""
 
     rows = db.run_query(
-        f"SELECT description FROM oc_information_description WHERE information_id = {int(information_id)} AND language_id = 1"
+        f"SELECT description FROM oc_information_description WHERE information_id = {int(information_id)} AND language_id = {lang_id()}"
     )
     if not rows:
         return json.dumps({"error": f"Information page {information_id} not found"})
@@ -852,7 +911,7 @@ def update_information(information_id: int, find: str, replace: str) -> str:
     safe_updated = esc(updated)
     result = db.run_query(
         f"UPDATE oc_information_description SET description = '{safe_updated}' "
-        f"WHERE information_id = {int(information_id)} AND language_id = 1"
+        f"WHERE information_id = {int(information_id)} AND language_id = {lang_id()}"
     )
     return json.dumps({
         **_update_status(result), "information_id": information_id,
@@ -867,7 +926,7 @@ def update_information(information_id: int, find: str, replace: str) -> str:
 def get_seo_urls(query_pattern: str = "") -> str:
     """Get SEO URL mappings. Filter by query pattern (e.g. 'product_id=%')."""
 
-    where = "WHERE store_id = 0 AND language_id = 1"
+    where = f"WHERE store_id = 0 AND language_id = {lang_id()}"
     if query_pattern:
         safe = esc(query_pattern)
         where += f" AND query LIKE '{safe}'"
@@ -891,8 +950,8 @@ def get_stock_report(limit: int = 200) -> str:
         SELECT p.product_id, pd.name, p.model, p.sku, p.quantity, p.price,
                ss.name AS stock_status
         FROM oc_product p
-        JOIN oc_product_description pd ON p.product_id = pd.product_id AND pd.language_id = 1
-        LEFT JOIN oc_stock_status ss ON p.stock_status_id = ss.stock_status_id AND ss.language_id = 1
+        JOIN oc_product_description pd ON p.product_id = pd.product_id AND pd.language_id = {lang_id()}
+        LEFT JOIN oc_stock_status ss ON p.stock_status_id = ss.stock_status_id AND ss.language_id = {lang_id()}
         WHERE p.status = 1
         ORDER BY p.quantity ASC
         LIMIT {int(limit)}
@@ -923,7 +982,7 @@ def update_order_status(
         return json.dumps({"error": f"Order {order_id} not found"})
 
     status_row = db.run_query(
-        f"SELECT name FROM oc_order_status WHERE order_status_id = {int(order_status_id)} AND language_id = 1"
+        f"SELECT name FROM oc_order_status WHERE order_status_id = {int(order_status_id)} AND language_id = {lang_id()}"
     )
     if not status_row:
         return json.dumps({"error": f"Unknown order_status_id {order_status_id} — see get_order_statuses"})
@@ -1072,7 +1131,7 @@ def dashboard(low_stock_threshold: int = 5) -> str:
     breakdown, stock alerts, and the latest orders. The 'give me a store
     summary' tool. Excludes cancelled/failed/refunded orders from revenue."""
 
-    excluded = "(0, 7, 8, 10, 14, 11, 12)"
+    excluded = EXCLUDED_ORDER_STATUS_IDS
 
     revenue = db.run_query(f"""
         SELECT
@@ -1088,10 +1147,10 @@ def dashboard(low_stock_threshold: int = 5) -> str:
           AND order_status_id NOT IN {excluded}
     """)
 
-    statuses = db.run_query("""
+    statuses = db.run_query(f"""
         SELECT os.name AS status, COUNT(*) AS orders
         FROM oc_order o
-        LEFT JOIN oc_order_status os ON o.order_status_id = os.order_status_id AND os.language_id = 1
+        LEFT JOIN oc_order_status os ON o.order_status_id = os.order_status_id AND os.language_id = {lang_id()}
         WHERE o.date_added >= DATE_SUB(NOW(), INTERVAL 30 DAY) AND o.order_status_id > 0
         GROUP BY os.name
         ORDER BY orders DESC
@@ -1105,20 +1164,20 @@ def dashboard(low_stock_threshold: int = 5) -> str:
         WHERE status = 1
     """)
 
-    lowest = db.run_query("""
+    lowest = db.run_query(f"""
         SELECT p.product_id, pd.name, p.quantity
         FROM oc_product p
-        JOIN oc_product_description pd ON p.product_id = pd.product_id AND pd.language_id = 1
+        JOIN oc_product_description pd ON p.product_id = pd.product_id AND pd.language_id = {lang_id()}
         WHERE p.status = 1
         ORDER BY p.quantity ASC
         LIMIT 5
     """)
 
-    latest = db.run_query("""
+    latest = db.run_query(f"""
         SELECT o.order_id, CONCAT(o.firstname, ' ', o.lastname) AS customer,
                o.total, os.name AS status, o.date_added
         FROM oc_order o
-        LEFT JOIN oc_order_status os ON o.order_status_id = os.order_status_id AND os.language_id = 1
+        LEFT JOIN oc_order_status os ON o.order_status_id = os.order_status_id AND os.language_id = {lang_id()}
         ORDER BY o.date_added DESC
         LIMIT 5
     """)
