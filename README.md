@@ -545,6 +545,13 @@ Thanks to the contributors so far:
 - [@ClayRabbit](https://github.com/ClayRabbit) — configurable SSH port and full `config.php` DB fallback
 - [@Penikov](https://github.com/Penikov) — direct MySQL transport and language auto-detection; maintains the [livestore-mcp](https://github.com/Penikov/livestore-mcp) fork for LiveStore + Technics stores
 
+## Support
+
+Built and maintained in evenings. If it saves you time on a store, a coffee helps keep
+the tools coming:
+
+[![Buy Me a Coffee](https://img.shields.io/badge/Buy%20me%20a%20coffee-%E2%98%95-ffdd00?style=flat-square)](https://buymeacoffee.com/chrisbray85)
+
 ## License
 
 MIT — see [LICENSE](LICENSE) for details.
