@@ -8,6 +8,13 @@ from fastmcp import FastMCP
 
 from .config import Config
 from .db import OpenCartDB
+from .policy import (
+    POLICY_RANK,
+    deny_sensitive_path,
+    deny_sensitive_sql,
+    redact_setting_rows,
+    secrets_guarded,
+)
 
 config = Config.from_env()
 db = OpenCartDB(config)
@@ -83,10 +90,21 @@ def _j3_query(sql: str):
 mcp = FastMCP("OpenCart")
 
 
+def _tool(min_policy: str = "safe"):
+    """Register an MCP tool only if config.policy is at least min_policy."""
+
+    def deco(fn):
+        if POLICY_RANK[config.policy] >= POLICY_RANK[min_policy]:
+            return mcp.tool()(fn)
+        return fn
+
+    return deco
+
+
 # ─── READ TOOLS ──────────────────────────────────────────────
 
 
-@mcp.tool()
+@_tool("safe")
 def get_products(
     search: str = "",
     category_id: int = 0,
@@ -123,7 +141,7 @@ def get_products(
     return json.dumps(rows)
 
 
-@mcp.tool()
+@_tool("safe")
 def get_product(product_id: int) -> str:
     """Get full details for a single product including images, options, and attributes."""
 
@@ -170,7 +188,7 @@ def get_product(product_id: int) -> str:
     return json.dumps(result)
 
 
-@mcp.tool()
+@_tool("safe")
 def get_orders(
     status: str = "",
     limit: int = 20,
@@ -200,7 +218,7 @@ def get_orders(
     return json.dumps(rows)
 
 
-@mcp.tool()
+@_tool("safe")
 def get_order(order_id: int) -> str:
     """Get full order details including line items and totals."""
 
@@ -241,7 +259,7 @@ def get_order(order_id: int) -> str:
     return json.dumps(result)
 
 
-@mcp.tool()
+@_tool("safe")
 def get_customers(search: str = "", limit: int = 20) -> str:
     """Search customers by name or email."""
     where = "WHERE 1=1"
@@ -263,7 +281,7 @@ def get_customers(search: str = "", limit: int = 20) -> str:
     return json.dumps(rows)
 
 
-@mcp.tool()
+@_tool("safe")
 def get_categories(parent_id: int = 0) -> str:
     """Get category tree. Set parent_id=0 for top-level categories."""
 
@@ -281,7 +299,7 @@ def get_categories(parent_id: int = 0) -> str:
     return json.dumps(rows)
 
 
-@mcp.tool()
+@_tool("safe")
 def get_settings(group: str = "", key: str = "") -> str:
     """Get OpenCart settings. Filter by group (e.g. 'config') and/or key pattern (SQL LIKE)."""
 
@@ -295,10 +313,12 @@ def get_settings(group: str = "", key: str = "") -> str:
 
     sql = f"SELECT setting_id, code, `key`, value, serialized FROM oc_setting {where} ORDER BY code, `key`"
     rows = db.run_query(sql)
+    if secrets_guarded(config.policy):
+        rows = redact_setting_rows(rows)
     return json.dumps(rows)
 
 
-@mcp.tool()
+@_tool("safe")
 def get_j3_settings(pattern: str = "") -> str:
     """Get Journal3 theme settings. Filter by setting_name pattern (SQL LIKE)."""
 
@@ -318,7 +338,7 @@ def get_j3_settings(pattern: str = "") -> str:
     return json.dumps(rows)
 
 
-@mcp.tool()
+@_tool("safe")
 def get_j3_skin_settings(pattern: str = "", skin_id: int = 1) -> str:
     """Get Journal3 skin settings. Filter by setting_name pattern (SQL LIKE)."""
 
@@ -338,7 +358,7 @@ def get_j3_skin_settings(pattern: str = "", skin_id: int = 1) -> str:
     return json.dumps(rows)
 
 
-@mcp.tool()
+@_tool("safe")
 def get_modules(module_type: str = "", search: str = "") -> str:
     """List Journal3 modules. Filter by type (e.g. 'products', 'slider', 'product_tabs').
     Search module_data content with search parameter."""
@@ -364,7 +384,7 @@ def get_modules(module_type: str = "", search: str = "") -> str:
     return json.dumps(rows)
 
 
-@mcp.tool()
+@_tool("safe")
 def get_j3_module(module_id: int) -> str:
     """Get full Journal3 module data for a single module by ID.
     Returns full JSON config — can be large for complex modules."""
@@ -380,7 +400,7 @@ def get_j3_module(module_id: int) -> str:
     return json.dumps(rows[0])
 
 
-@mcp.tool()
+@_tool("safe")
 def get_order_statuses() -> str:
     """List all order statuses with their IDs."""
 
@@ -394,7 +414,7 @@ def get_order_statuses() -> str:
     return json.dumps(rows)
 
 
-@mcp.tool()
+@_tool("safe")
 def get_product_attributes(product_id: int) -> str:
     """Get all attributes for a product (e.g. CAS number, molecular weight, storage)."""
 
@@ -412,7 +432,7 @@ def get_product_attributes(product_id: int) -> str:
     return json.dumps(rows)
 
 
-@mcp.tool()
+@_tool("safe")
 def sales_summary(days: int = 30, top_n: int = 20) -> str:
     """Get sales summary: total revenue, order count, top selling products.
     Covers the last N days. Excludes cancelled/failed/refunded orders."""
@@ -465,7 +485,7 @@ def sales_summary(days: int = 30, top_n: int = 20) -> str:
     return json.dumps(result)
 
 
-@mcp.tool()
+@_tool("safe")
 def get_modifications() -> str:
     """List all OCMOD modifications with status."""
 
@@ -478,7 +498,7 @@ def get_modifications() -> str:
     return json.dumps(rows)
 
 
-@mcp.tool()
+@_tool("safe")
 def get_extensions() -> str:
     """List installed OpenCart extensions."""
 
@@ -491,7 +511,7 @@ def get_extensions() -> str:
     return json.dumps(rows)
 
 
-@mcp.tool()
+@_tool("safe")
 def query(sql: str) -> str:
     """Execute a read-only SQL query. Only SELECT statements allowed.
     Use this for custom queries not covered by other tools."""
@@ -512,11 +532,16 @@ def query(sql: str) -> str:
     if dangerous.search(scan):
         return json.dumps({"error": "Write operations not allowed in query(). Use run_sql() instead."})
 
+    if secrets_guarded(config.policy):
+        blocked = deny_sensitive_sql(cleaned, db._get_config()["PREFIX"])
+        if blocked:
+            return json.dumps({"error": blocked})
+
     rows = db.run_query(cleaned)
     return json.dumps(rows)
 
 
-@mcp.tool()
+@_tool("safe")
 def get_table_schema(table: str) -> str:
     """Show columns for an OpenCart table. The install's prefix (e.g. 'oc_') is added automatically if missing."""
 
@@ -534,7 +559,7 @@ def get_table_schema(table: str) -> str:
     return json.dumps(rows)
 
 
-@mcp.tool()
+@_tool("safe")
 def list_tables(pattern: str | None = None) -> str:
     """List database tables matching pattern. Default: all OpenCart tables (using detected prefix)."""
 
@@ -545,10 +570,28 @@ def list_tables(pattern: str | None = None) -> str:
     return json.dumps(rows)
 
 
-@mcp.tool()
-def get_file(path: str, max_lines: int = 200) -> str:
+# Cap MCP response size; OpenCart error.log can be hundreds of MB.
+_GET_FILE_MAX_LINES = 2000
+# When from_end+grep, only scan this many trailing lines (avoid full-file grep).
+_GET_FILE_GREP_WINDOW = 50000
+
+
+@_tool("safe")
+def get_file(
+    path: str,
+    max_lines: int = 200,
+    from_end: bool = False,
+    grep: str = "",
+) -> str:
     """Read a file from the VPS. Path is relative to OpenCart root unless absolute.
-    Returns first max_lines lines. Requires SSH or DDEV."""
+
+    By default returns the first max_lines lines (head). Set from_end=True for the
+    last max_lines (tail) — preferred for large logs such as error.log.
+    Optional grep is a fixed substring filter (not a regex). With from_end=True,
+    grep only searches the last ~50k lines so huge logs stay fast; with
+    from_end=False, grep scans the whole file then takes the first max_lines
+    matches (can be slow on very large files). max_lines is capped at 2000.
+    Requires SSH or DDEV."""
 
     blocked = _shell_error()
     if blocked:
@@ -563,14 +606,38 @@ def get_file(path: str, max_lines: int = 200) -> str:
     if ".." in path:
         return json.dumps({"error": "Path traversal not allowed"})
 
-    out = db.run_command(f"head -n {int(max_lines)} {shlex.quote(full_path)}")
-    return out
+    if secrets_guarded(config.policy):
+        blocked = deny_sensitive_path(path) or deny_sensitive_path(full_path)
+        if blocked:
+            return json.dumps({"error": blocked})
+
+    n = max(1, min(int(max_lines), _GET_FILE_MAX_LINES))
+    quoted = shlex.quote(full_path)
+    pattern = grep.strip()
+
+    if pattern:
+        quoted_pat = shlex.quote(pattern)
+        if from_end:
+            window = max(n, _GET_FILE_GREP_WINDOW)
+            cmd = (
+                f"tail -n {window} {quoted} | grep -F -- {quoted_pat} | tail -n {n}"
+            )
+        else:
+            cmd = f"grep -F -- {quoted_pat} {quoted} | head -n {n}"
+        # grep exits 1 when there are no matches; run_command ignores exit codes.
+        return db.run_command(cmd, timeout=60)
+
+    if from_end:
+        cmd = f"tail -n {n} {quoted}"
+    else:
+        cmd = f"head -n {n} {quoted}"
+    return db.run_command(cmd)
 
 
 # ─── WRITE TOOLS ─────────────────────────────────────────────
 
 
-@mcp.tool()
+@_tool("manager")
 def update_product(
     product_id: int,
     price: float | None = None,
@@ -620,7 +687,7 @@ def update_product(
     return json.dumps({**status, "product_id": product_id, "results": results})
 
 
-@mcp.tool()
+@_tool("manager")
 def update_setting(group: str, key: str, value: str) -> str:
     """Update an OpenCart setting."""
 
@@ -634,7 +701,7 @@ def update_setting(group: str, key: str, value: str) -> str:
     return json.dumps({**_update_status(result), "code": group, "key": key, "result": result})
 
 
-@mcp.tool()
+@_tool("manager")
 def update_j3_setting(setting_name: str, setting_value: str) -> str:
     """Update a Journal3 theme setting."""
 
@@ -647,7 +714,7 @@ def update_j3_setting(setting_name: str, setting_value: str) -> str:
     return json.dumps({**_update_status(result), "setting_name": setting_name, "result": result})
 
 
-@mcp.tool()
+@_tool("manager")
 def update_j3_skin_setting(setting_name: str, setting_value: str, skin_id: int = 1) -> str:
     """Update a Journal3 skin setting."""
 
@@ -660,7 +727,7 @@ def update_j3_skin_setting(setting_name: str, setting_value: str, skin_id: int =
     return json.dumps({**_update_status(result), "setting_name": setting_name, "result": result})
 
 
-@mcp.tool()
+@_tool("manager")
 def update_j3_module(module_id: int, find: str, replace: str) -> str:
     """Update text within a Journal3 module's JSON data using find/replace.
     Safer than rewriting the entire module — only changes the matched text.
@@ -690,7 +757,7 @@ def update_j3_module(module_id: int, find: str, replace: str) -> str:
     })
 
 
-@mcp.tool()
+@_tool("manager")
 def update_seo_url(query: str, keyword: str) -> str:
     """Update or create an SEO URL mapping. Query is e.g. 'product_id=123' or 'category_id=45'.
     Keyword is the URL slug (e.g. 'bpc-157-5mg')."""
@@ -715,7 +782,7 @@ def update_seo_url(query: str, keyword: str) -> str:
         return json.dumps({"created": True, "query": query, "keyword": keyword, "result": result})
 
 
-@mcp.tool()
+@_tool("manager")
 def update_category(
     category_id: int,
     name: str | None = None,
@@ -759,7 +826,7 @@ def update_category(
     return json.dumps({**status, "category_id": category_id, "results": results})
 
 
-@mcp.tool()
+@_tool("developer")
 def write_file(path: str, content: str) -> str:
     """Write content to a file on the VPS via SFTP. Path is relative to OpenCart root unless absolute.
     Creates parent directories if needed. Use with caution. Requires SSH or DDEV."""
@@ -776,6 +843,11 @@ def write_file(path: str, content: str) -> str:
     if ".." in path:
         return json.dumps({"error": "Path traversal not allowed"})
 
+    if secrets_guarded(config.policy):
+        blocked = deny_sensitive_path(path) or deny_sensitive_path(full_path)
+        if blocked:
+            return json.dumps({"error": blocked})
+
     # Ensure parent directory exists
     parent = "/".join(full_path.split("/")[:-1])
     db.run_command(f"mkdir -p {shlex.quote(parent)}")
@@ -784,7 +856,7 @@ def write_file(path: str, content: str) -> str:
     return json.dumps({"written": True, "path": full_path, "bytes": len(content)})
 
 
-@mcp.tool()
+@_tool("developer")
 def clear_cache() -> str:
     """Clear OpenCart and Journal3 caches on VPS. Requires SSH or DDEV."""
 
@@ -799,7 +871,7 @@ def clear_cache() -> str:
     return out.strip()
 
 
-@mcp.tool()
+@_tool("developer")
 def run_sql(sql: str) -> str:
     """Execute a write SQL statement (INSERT/UPDATE/DELETE).
     Use with caution — changes the database directly."""
@@ -810,11 +882,16 @@ def run_sql(sql: str) -> str:
     if first_word in ("DROP", "TRUNCATE", "ALTER", "CREATE", "GRANT", "REVOKE"):
         return json.dumps({"error": f"DDL operation '{first_word}' not allowed. Too dangerous."})
 
+    if secrets_guarded(config.policy):
+        blocked = deny_sensitive_sql(cleaned, db._get_config()["PREFIX"])
+        if blocked:
+            return json.dumps({"error": blocked})
+
     result = db.run_query(cleaned)
     return json.dumps(result)
 
 
-@mcp.tool()
+@_tool("developer")
 def refresh_modifications() -> str:
     """Clear the OCMOD modification cache so OpenCart serves unmodified files.
     Run Admin > Extensions > Modifications > Refresh afterwards for the full
@@ -846,7 +923,7 @@ def refresh_modifications() -> str:
 # ─── INFORMATION PAGES ────────────────────────────────────────
 
 
-@mcp.tool()
+@_tool("safe")
 def get_information_pages(search: str = "") -> str:
     """List CMS/information pages (About Us, FAQ, T&Cs, etc.) with title and content preview.
     Search by title text."""
@@ -870,7 +947,7 @@ def get_information_pages(search: str = "") -> str:
     return json.dumps(rows)
 
 
-@mcp.tool()
+@_tool("safe")
 def get_information_page(information_id: int) -> str:
     """Get full content of a single information/CMS page by ID."""
 
@@ -889,7 +966,7 @@ def get_information_page(information_id: int) -> str:
     return json.dumps(rows[0])
 
 
-@mcp.tool()
+@_tool("manager")
 def update_information(information_id: int, find: str, replace: str) -> str:
     """Update text within an information/CMS page using find/replace.
     Works on the HTML description field. Use get_information_page first to see current content."""
@@ -922,7 +999,7 @@ def update_information(information_id: int, find: str, replace: str) -> str:
 # ─── UTILITY ─────────────────────────────────────────────────
 
 
-@mcp.tool()
+@_tool("safe")
 def get_seo_urls(query_pattern: str = "") -> str:
     """Get SEO URL mappings. Filter by query pattern (e.g. 'product_id=%')."""
 
@@ -942,7 +1019,7 @@ def get_seo_urls(query_pattern: str = "") -> str:
     return json.dumps(rows)
 
 
-@mcp.tool()
+@_tool("safe")
 def get_stock_report(limit: int = 200) -> str:
     """Get stock levels for active products, sorted by quantity (lowest first)."""
 
@@ -963,7 +1040,7 @@ def get_stock_report(limit: int = 200) -> str:
 # ─── ORDERS, COUPONS, DASHBOARD ──────────────────────────────
 
 
-@mcp.tool()
+@_tool("manager")
 def update_order_status(
     order_id: int,
     order_status_id: int,
@@ -1005,7 +1082,7 @@ def update_order_status(
     })
 
 
-@mcp.tool()
+@_tool("safe")
 def get_coupons(search: str = "", include_disabled: bool = False, limit: int = 50) -> str:
     """List discount coupons with usage counts. Search by code or name.
     Default: enabled, unexpired coupons only."""
@@ -1030,7 +1107,7 @@ def get_coupons(search: str = "", include_disabled: bool = False, limit: int = 5
     return json.dumps(rows)
 
 
-@mcp.tool()
+@_tool("manager")
 def create_coupon(
     code: str,
     name: str,
@@ -1075,7 +1152,7 @@ def create_coupon(
     })
 
 
-@mcp.tool()
+@_tool("manager")
 def update_coupon(
     coupon_id: int,
     status: int | None = None,
@@ -1111,7 +1188,7 @@ def update_coupon(
     return json.dumps({**_update_status(result), "coupon_id": coupon_id})
 
 
-@mcp.tool()
+@_tool("safe")
 def get_vouchers(limit: int = 50) -> str:
     """List gift vouchers with amount, sender/recipient, and status."""
 
@@ -1125,7 +1202,7 @@ def get_vouchers(limit: int = 50) -> str:
     return json.dumps(db.run_query(sql))
 
 
-@mcp.tool()
+@_tool("safe")
 def dashboard(low_stock_threshold: int = 5) -> str:
     """One-call store overview: revenue today / 7 days / 30 days, order status
     breakdown, stock alerts, and the latest orders. The 'give me a store

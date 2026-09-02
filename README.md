@@ -25,10 +25,11 @@ This matters if you're connecting AI to a live store. Every decision here was ma
 - **DDL is blocked** — DROP, ALTER, TRUNCATE, CREATE will never run, even through `run_sql()`
 - **SSH tunnel** — database credentials stay inside the encrypted connection, never exposed
 - **Path traversal blocked** — `get_file()` and `write_file()` reject `..` in paths
+- **Access policy** — optional `OPENCART_MCP_POLICY` (`safe` / `manager` / `developer` / `all`) hides write tools by role; default `all` keeps previous behavior. Levels below `all` also apply best-effort secret guardrails (block `config.php` / admin user tables, redact password-like settings)
 - **Write confirmation** — Claude Code prompts you before any write tool executes
 - **Nothing runs on your server** — no agents, no daemons, no PHP files uploaded. The server runs on your machine and connects over SSH
 
-You can point this at a production store and not worry about it doing something stupid.
+You can point this at a production store and not worry about it doing something stupid. For day-to-day agent use on production data, prefer `OPENCART_MCP_POLICY=safe` or `developer` (writes allowed for module work, secrets still filtered) over `all`.
 
 ---
 
@@ -150,8 +151,19 @@ OPENCART_SSH_PORT=22           # if SSH runs on a non-standard port
 OPENCART_DB_HOST=localhost     # if MySQL isn't on the same host (e.g. a tunnel)
 OPENCART_DB_PREFIX=oc_         # table prefix override
 OPENCART_LANGUAGE_ID=1         # skip auto-detect from config_language
+# OPENCART_MCP_POLICY=all      # safe | manager | developer | all (default: all)
 ```
 
+`OPENCART_MCP_POLICY` controls which tools are registered:
+
+| Value | Tools | Secret guardrails |
+|-------|--------|-------------------|
+| `safe` | Read-only tools | yes |
+| `manager` | + catalog/order/settings/coupon writes | yes |
+| `developer` | + `write_file`, `run_sql`, cache/OCMOD clear | yes |
+| `all` (default) | Everything | no (previous behavior) |
+
+Guardrails (when policy is not `all`) block paths like `config.php` / `.env`, queries against admin user/session tables, and redact password-like keys in `get_settings`. This is best-effort, not a hard security boundary.
 Any `OPENCART_DB_*` value you leave unset is read from the install's `config.php` automatically, so on most setups the main block above is all you need.
 
 The storefront language is auto-detected from the store's `config_language` setting, so multi-language and non-English stores work without configuration — set `OPENCART_LANGUAGE_ID` only to force a specific one.
@@ -355,7 +367,7 @@ These all work out of the box. Just type them into Claude Code.
 | `query` | Custom read-only SQL (SELECT/SHOW/DESCRIBE/EXPLAIN only) |
 | `get_table_schema` | Column definitions for any table |
 | `list_tables` | List tables matching a pattern |
-| `get_file` | Read files from the server (path traversal blocked) |
+| `get_file` | Read files from the server (`from_end` for tail, optional fixed-string `grep`; path traversal blocked). Large logs: prefer `from_end=True`; with grep, only the last ~50k lines are scanned |
 | `get_coupons` | List discount coupons with usage counts |
 | `get_vouchers` | List gift vouchers |
 | `dashboard` | One-call store overview — revenue, order statuses, stock alerts, latest orders |
@@ -428,6 +440,8 @@ Run dev and live as separate instances in the same Claude session:
 ```
 
 Claude prefixes tools automatically — `opencart_dev__get_products` vs `opencart_live__get_products` — so there's no confusion about which store you're querying.
+
+You can also run the same store twice with different policies (e.g. daily `safe` plus an occasional `developer` entry) by duplicating the block and setting `OPENCART_MCP_POLICY` per instance.
 
 ---
 

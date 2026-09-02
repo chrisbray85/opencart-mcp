@@ -5,6 +5,8 @@ from dataclasses import dataclass
 
 from dotenv import load_dotenv
 
+from .policy import parse_policy
+
 
 @dataclass
 class Config:
@@ -22,6 +24,7 @@ class Config:
     storage_dir: str  # Storage directory (container path for DDEV)
     local_root: str  # Local project path (cwd for ddev commands)
     language_id: int  # 0 = detect from oc_setting/oc_language
+    policy: str  # safe | manager | developer | all
 
     @property
     def is_ddev(self) -> bool:
@@ -60,4 +63,5 @@ class Config:
             storage_dir=storage_dir,
             local_root=local_root,
             language_id=int(os.environ.get("OPENCART_LANGUAGE_ID", "0").strip() or "0"),
+            policy=parse_policy(os.environ.get("OPENCART_MCP_POLICY")),
         )
