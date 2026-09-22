@@ -31,6 +31,9 @@ _SECRET_KEY_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Credential columns on otherwise-legitimate tables (oc_customer holds password/salt).
+_SENSITIVE_COLUMN_RE = re.compile(r"(?i)\b(password|salt)\b")
+
 _SECRET_BASENAMES = frozenset(
     {
         "config.php",
@@ -44,8 +47,10 @@ _SECRET_BASENAMES = frozenset(
 
 
 def parse_policy(value: str | None) -> str:
-    """Normalize OPENCART_MCP_POLICY; default all. Raise on unknown values."""
-    raw = (value if value is not None else os.environ.get("OPENCART_MCP_POLICY", "all")) or "all"
+    """Normalize OPENCART_MCP_POLICY; default manager. Raise on unknown values."""
+    raw = (
+        value if value is not None else os.environ.get("OPENCART_MCP_POLICY", "manager")
+    ) or "manager"
     policy = raw.strip().lower()
     if policy not in VALID_POLICIES:
         allowed = ", ".join(sorted(VALID_POLICIES, key=lambda p: POLICY_RANK[p]))
@@ -66,7 +71,8 @@ def deny_sensitive_path(path: str) -> str | None:
 
     if name in _SECRET_BASENAMES or name.startswith(".env."):
         return f"Path blocked by policy ({name})"
-    if lower.endswith("/config.php") or name == "config.php":
+    # startswith also catches copies like config.php.bak / config.php~ / config.php.old
+    if name.startswith("config.php"):
         return "Path blocked by policy (config.php)"
     if "/.ssh/" in f"/{lower}/" or lower.endswith("/.ssh") or "/.ssh/" in lower:
         return "Path blocked by policy (.ssh)"
@@ -100,6 +106,11 @@ def deny_sensitive_sql(sql: str, table_prefix: str) -> str | None:
             + ", ".join(sorted(set(blocked)))
             + ")"
         )
+    # oc_customer isn't a blocked table (lookups are legitimate), but its
+    # password/salt columns are credentials — catch them by column name.
+    col = _SENSITIVE_COLUMN_RE.search(scan)
+    if col:
+        return f"Query blocked by policy (credential column: {col.group(1).lower()})"
     return None
 
 
