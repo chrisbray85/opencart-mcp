@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install
+        run: pip install -e . pytest
+      - name: Run tests
+        run: pytest tests/ -v
+      - name: Server imports and registers tools at every policy level
+        run: |
+          for policy in safe manager developer all; do
+            OPENCART_MCP_POLICY=$policy python - <<'EOF'
+          import asyncio, os
+          import opencart_mcp.server as s
+          tools = asyncio.run(s.mcp.list_tools())
+          print(f"{s.config.policy}: {len(tools)} tools")
+          assert len(tools) > 0
+          EOF
+          done

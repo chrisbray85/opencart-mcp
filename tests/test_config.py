@@ -24,6 +24,7 @@ def _cfg(**overrides) -> Config:
         storage_dir="/var/www/storage",
         local_root="",
         language_id=0,
+        policy="all",
     )
     base.update(overrides)
     return Config(**base)

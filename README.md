@@ -25,11 +25,11 @@ This matters if you're connecting AI to a live store. Every decision here was ma
 - **DDL is blocked** — DROP, ALTER, TRUNCATE, CREATE will never run, even through `run_sql()`
 - **SSH tunnel** — database credentials stay inside the encrypted connection, never exposed
 - **Path traversal blocked** — `get_file()` and `write_file()` reject `..` in paths
-- **Access policy** — optional `OPENCART_MCP_POLICY` (`safe` / `manager` / `developer` / `all`) hides write tools by role; default `all` keeps previous behavior. Levels below `all` also apply best-effort secret guardrails (block `config.php` / admin user tables, redact password-like settings)
+- **Access policy** — `OPENCART_MCP_POLICY` (`safe` / `manager` / `developer` / `all`) hides write tools by role; the default is `manager` (catalog/order/settings writes, no raw SQL or file writes). Levels below `all` also apply best-effort secret guardrails (block `config.php` / credential tables and columns, redact password-like settings). Set `OPENCART_MCP_POLICY=all` explicitly to restore the pre-0.8 behaviour
 - **Write confirmation** — Claude Code prompts you before any write tool executes
 - **Nothing runs on your server** — no agents, no daemons, no PHP files uploaded. The server runs on your machine and connects over SSH
 
-You can point this at a production store and not worry about it doing something stupid. For day-to-day agent use on production data, prefer `OPENCART_MCP_POLICY=safe` or `developer` (writes allowed for module work, secrets still filtered) over `all`.
+You can point this at a production store and not worry about it doing something stupid. For day-to-day agent use on production data, prefer `OPENCART_MCP_POLICY=safe`; use `developer` for module work (raw SQL and file writes, secrets still filtered) and reserve `all` for stores you could restore from backup.
 
 ---
 
@@ -151,7 +151,7 @@ OPENCART_SSH_PORT=22           # if SSH runs on a non-standard port
 OPENCART_DB_HOST=localhost     # if MySQL isn't on the same host (e.g. a tunnel)
 OPENCART_DB_PREFIX=oc_         # table prefix override
 OPENCART_LANGUAGE_ID=1         # skip auto-detect from config_language
-# OPENCART_MCP_POLICY=all      # safe | manager | developer | all (default: all)
+# OPENCART_MCP_POLICY=manager  # safe | manager | developer | all (default: manager)
 ```
 
 `OPENCART_MCP_POLICY` controls which tools are registered:
@@ -159,9 +159,9 @@ OPENCART_LANGUAGE_ID=1         # skip auto-detect from config_language
 | Value | Tools | Secret guardrails |
 |-------|--------|-------------------|
 | `safe` | Read-only tools | yes |
-| `manager` | + catalog/order/settings/coupon writes | yes |
+| `manager` (default) | + catalog/order/settings/coupon writes | yes |
 | `developer` | + `write_file`, `run_sql`, cache/OCMOD clear | yes |
-| `all` (default) | Everything | no (previous behavior) |
+| `all` | Everything | no (pre-0.8 behaviour) |
 
 Guardrails (when policy is not `all`) block paths like `config.php` / `.env`, queries against admin user/session tables, and redact password-like keys in `get_settings`. This is best-effort, not a hard security boundary.
 Any `OPENCART_DB_*` value you leave unset is read from the install's `config.php` automatically, so on most setups the main block above is all you need.
