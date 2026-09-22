@@ -75,14 +75,28 @@ class SqlGuardTest(unittest.TestCase):
         # oc_customer is queryable, but its password/salt columns are not.
         for sql in (
             "SELECT password FROM oc_customer",
+            "SELECT `password` FROM oc_customer",
+            "SELECT c.password FROM oc_customer c",
             "SELECT email, salt FROM oc_customer WHERE customer_id = 1",
             "UPDATE oc_customer SET PASSWORD = 'x' WHERE customer_id = 1",
         ):
             self.assertIsNotNone(deny_sensitive_sql(sql, "oc_"), sql)
 
-    def test_allows_ordinary_queries(self):
+    def test_blocks_star_select_on_customer(self):
+        # SELECT * returns password/salt without naming them.
         for sql in (
             "SELECT * FROM oc_customer WHERE email = 'a@b.com'",
+            "SELECT c.* FROM oc_customer c",
+            "SELECT oc_customer.* FROM oc_customer JOIN oc_order USING (customer_id)",
+        ):
+            self.assertIsNotNone(deny_sensitive_sql(sql, "oc_"), sql)
+
+    def test_allows_ordinary_queries(self):
+        for sql in (
+            "SELECT customer_id, firstname, email FROM oc_customer WHERE email = 'a@b.com'",
+            "SELECT COUNT(*) FROM oc_customer",  # aggregate star is harmless
+            "SELECT * FROM oc_product",  # star on a non-credential table
+            "SELECT * FROM oc_customer_group_description",  # word-boundary near-miss
             "SELECT 'oc_user' AS label FROM oc_product",  # name only in a literal
             "SELECT * FROM oc_user_group",  # word-boundary near-miss
             "SELECT `key`, value FROM oc_setting WHERE `key` LIKE '%password%'",

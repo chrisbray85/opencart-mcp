@@ -34,6 +34,12 @@ _SECRET_KEY_RE = re.compile(
 # Credential columns on otherwise-legitimate tables (oc_customer holds password/salt).
 _SENSITIVE_COLUMN_RE = re.compile(r"(?i)\b(password|salt)\b")
 
+# Tables whose star-selects leak those columns without naming them.
+_CREDENTIAL_COLUMN_TABLES = frozenset({"customer"})
+
+# SELECT * / SELECT c.* — but not COUNT(*), where '(' precedes the star.
+_STAR_SELECT_RE = re.compile(r"(?i)(?:select|,)\s*(?:`?\w+`?\.)?\*")
+
 _SECRET_BASENAMES = frozenset(
     {
         "config.php",
@@ -107,10 +113,21 @@ def deny_sensitive_sql(sql: str, table_prefix: str) -> str | None:
             + ")"
         )
     # oc_customer isn't a blocked table (lookups are legitimate), but its
-    # password/salt columns are credentials — catch them by column name.
+    # password/salt columns are credentials — catch them by column name,
+    # and catch SELECT * / SELECT c.*, which returns them without naming them.
     col = _SENSITIVE_COLUMN_RE.search(scan)
     if col:
         return f"Query blocked by policy (credential column: {col.group(1).lower()})"
+    for logical in _CREDENTIAL_COLUMN_TABLES:
+        names = {f"oc_{logical}", f"{prefix}{logical}"}
+        referenced = any(
+            re.search(rf"(?i)(?:`{re.escape(n)}`|\b{re.escape(n)}\b)", scan) for n in names
+        )
+        if referenced and _STAR_SELECT_RE.search(scan):
+            return (
+                f"Query blocked by policy (SELECT * on oc_{logical} returns credential "
+                "columns — list the columns you need instead)"
+            )
     return None
 
 
